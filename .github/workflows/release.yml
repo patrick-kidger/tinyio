@@ -1,0 +1,23 @@
+name: Release
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Release
+        uses: patrick-kidger/action_update_python_project@v7
+        with:
+            python-version: "3.11"
+            test-script: |
+                cp -r ${{ github.workspace }}/tests ./tests
+                cp ${{ github.workspace }}/pyproject.toml ./pyproject.toml
+                uv sync --extra dev --no-install-project --inexact
+                uv run --no-sync pytest
+            pypi-token: ${{ secrets.pypi_token }}
+            github-user: patrick-kidger
+            github-token: ${{ github.token }}

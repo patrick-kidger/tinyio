@@ -1,0 +1,52 @@
+[build-system]
+build-backend = "hatchling.build"
+requires = ["hatchling"]
+
+[project]
+authors = [
+  {email = "contact@kidger.site", name = "Patrick Kidger"}
+]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "License :: OSI Approved :: Apache Software License",
+  "Natural Language :: English",
+  "Programming Language :: Python :: 3"
+]
+dependencies = []
+description = "A tiny event loop for Python."
+keywords = ["asyncio", "tinyio", "async", "await"]
+license = {file = "LICENSE"}
+name = "tinyio"
+readme = "README.md"
+requires-python = ">=3.11"
+urls = {repository = "https://github.com/patrick-kidger/tinyio"}
+version = "0.1.0"
+
+[project.optional-dependencies]
+dev = ["pre-commit", "pytest"]
+
+[tool.hatch.build]
+include = ["tinyio/*"]
+
+[tool.pyright]
+include = ["tinyio", "tests"]
+
+[tool.ruff]
+extend-include = ["*.ipynb"]
+src = []
+line-length = 120
+
+[tool.ruff.lint]
+fixable = ["I001", "F401", "UP"]
+ignore = ["E402", "E721", "E731", "E741", "F722"]
+select = ["E", "F", "I001", "UP"]
+
+[tool.ruff.lint.flake8-import-conventions.extend-aliases]
+"collections" = "co"
+"functools" = "ft"
+"itertools" = "it"
+
+[tool.ruff.lint.isort]
+combine-as-imports = true
+lines-after-imports = 2
+order-by-type = true

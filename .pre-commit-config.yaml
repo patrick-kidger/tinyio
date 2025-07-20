@@ -1,0 +1,22 @@
+repos:
+  - repo: local
+    hooks:
+      - id: sort_pyproject
+        name: sort_pyproject
+        entry: toml-sort -i --sort-table-keys --sort-inline-tables
+        language: python
+        files: ^pyproject\.toml$
+        additional_dependencies: ["toml-sort==0.23.1"]
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.6.4
+    hooks:
+      - id: ruff-format # formatter
+        types_or: [python, pyi, jupyter, toml]
+      - id: ruff # linter
+        types_or: [python, pyi, jupyter, toml]
+        args: [--fix]
+  - repo: https://github.com/RobertCraigie/pyright-python
+    rev: v1.1.379
+    hooks:
+      - id: pyright
+        additional_dependencies: [numpy, pytest]
