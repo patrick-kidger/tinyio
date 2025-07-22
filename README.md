@@ -107,7 +107,7 @@ You can distinguish it from a normal Python function by putting `if False: yield
 <summary>Any funny business to know around loops?</summary>
 <br>
 
-(A) It is safe to call `.run` multiple times from the same loop, e.g. if you have multiple coroutines that are awaiting on shared internal coroutines. (B) The output of each coroutine is stored on the `Loop()` class. If you attempt to run a previously-ran coroutine in a new loop then you'll probably get an error.
+The output of each coroutine is stored on the `Loop()` class. If you attempt to run a previously-ran coroutine in a new `Loop()` then they will be treated as just returning `None`, which is probably not what you want.
 </details>
 
 <details>
