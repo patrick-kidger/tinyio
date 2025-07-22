@@ -114,7 +114,7 @@ The output of each coroutine is stored on the `Loop()` class. If you attempt to 
 <summary>vs <code>asyncio</code> or <code>trio</code>?.</summary>
 <br>
 
-I wasted a *lot* of time trying to get correct error propagation with `asyncio`, trying to reason whether my tasks would be cleaned up correctly or not (edge-triggered vs level-triggered etc etc). `trio` is excellent but still has a one-loop-per-thread rule, and doesn't propagate cancellations to/from threads. Thede points inspired me to try writing my own.
+I wasted a *lot* of time trying to get correct error propagation with `asyncio`, trying to reason whether my tasks would be cleaned up correctly or not (edge-triggered vs level-triggered etc etc). `trio` is excellent but still has a one-loop-per-thread rule, and doesn't propagate cancellations to/from threads. These points inspired me to try writing my own.
 
 Nonetheless you'll definitely still want one of the above if you need anything fancy. If you don't, and you really really want simple error semantics, then maybe `tinyio` is for you instead. (In particular `trio` will be a better choice if you still need the event loop when cleaning up from errors; in contrast `tinyio` does not allow scheduling work back on the event loop at that time.)
 </details>
