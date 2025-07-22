@@ -25,7 +25,7 @@ assert out == (4, 5)
 
 - Somewhat unusually, our syntax uses `yield` rather than `await`, but the behaviour is the same. Await another coroutine with `yield coro`. Await on multiple with `yield [coro1, coro2, ...]` (a 'gather' in asyncio terminology; a 'nursery' in trio terminology).
 - An error in one coroutine will cancel all coroutines across the entire event loop.
-    - If the erroring coroutine is sequentially depended on by a chain of other coroutines, then we likewise chain their tracebacks for easier debugging.
+    - If the erroring coroutine is sequentially depended on by a chain of other coroutines, then we chain their tracebacks for easier debugging.
     - Errors even propagate to and from synchronous operations ran in threads.
 - Can nest tinyio loops inside each other, none of this one-per-thread business.
 - Ludicrously simple. No need for futures, tasks, etc. Here's the full API:
