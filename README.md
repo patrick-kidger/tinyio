@@ -31,9 +31,9 @@ assert out == (4, 5)
 - Ludicrously simple. No need for futures, tasks, etc. Here's the full API:
     ```python
     tinyio.Loop
-    tinyio.CancelledError
-    tinyio.sleep
     tinyio.run_in_thread
+    tinyio.sleep
+    tinyio.CancelledError
     ```
 
 ## Installation
@@ -48,9 +48,7 @@ pip install tinyio
 
 Create a loop with `tinyio.Loop()`. It has a single method, `.run(coro)`, which consumes a coroutine, and which returns the output of that coroutine.
 
-#### Yielding
-
-You can `yield` three possible things:
+Coroutines can `yield` three possible things:
 
 - `yield`: yield nothing, this just pauses and gives other coroutines a chance to run.
 - `yield coro`: wait on a single coroutine, in which case we'll resume with the output of that coroutine once it is available.
@@ -60,7 +58,7 @@ You can safely `yield` the same coroutine multiple times, e.g. perhaps four coro
 
 #### Threading
 
-Synchronous functions can be ran in threads using `tinyio.run_in_thread`, which returns a coroutine you can `yield` on:
+Synchronous functions can be ran in threads using `tinyio.run_in_thread(fn, *args, **kwargs)`, which returns a coroutine you can `yield` on:
 ```python
 import time, tinyio
 
@@ -76,6 +74,11 @@ loop = tinyio.Loop()
 out = loop.run(foo(x=1))  # runs in one second, not three
 assert out == [2, 2, 2]
 ```
+The thread will call `fn(*args, **kwargs)`.
+
+#### Sleeping
+
+This is `tinyio.sleep(delay_in_seconds)`, which is a coroutine you can `yield` on.
 
 #### Error propagation
 
@@ -83,7 +86,7 @@ If any coroutine raises an error, then:
 
 1. All coroutines across the entire loop will have `tinyio.CancelledError` raised in them (from whatever `yield` point they are currently waiting at).
 2. Any functions ran in threads via `tinyio.run_in_thread` will also have `tinyio.CancelledError` raised in the thread.
-3. All errors are collected and raised in a `BaseExceptionGroup`. The original error will be the first in this group.
+3. The original error is raised out of `loop.run(...)`. This behaviour can be configured (e.g. to collect errors into a `BaseExceptionGroup`) by setting `loop.run(..., exception_group=None/False/True)`.
 
 This gives every coroutine a chance to shut down gracefully. Debuggers like [`patdb`](https://github.com/patrick-kidger/patdb) offer the ability to navigate across exceptions in an exception group, allowing you to inspect the state of all coroutines that were related to the error.
 
