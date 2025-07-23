@@ -61,7 +61,7 @@ def run_in_thread(
             except BaseException as e:
                 # try-and-immediately-except is a trick to remove the current frame from the traceback.
                 # This smoothly links up the `run_in_thread` invocation with the frame in `target`, with no weird
-                # `raise cast(BaseException, result)` frame halfway through.
+                # `raise result` frame halfway through.
                 # In addition we also need to preserve the `__context__` (and `__cause__`?) as the `raise` overwrites
                 # this with the current context.
                 # Curiously this doesn't seem to work if we unify this with the `else` branch of the `try/except/else`

@@ -29,12 +29,22 @@ class Loop:
         # need to their results around for the above use-case.
         self._results = weakref.WeakKeyDictionary()
 
-    def run(self, coro: Coro[_Return]) -> _Return:
+    def run(self, coro: Coro[_Return], exception_group: None | bool = None) -> _Return:
         """Run the specified coroutine in the event loop.
 
         **Arguments:**
 
         - `coro`: a Python coroutine to run; it may yield `None`, other coroutines, or lists-of-coroutines.
+        - `exception_group`: in the event of an error in one of the coroutines (which will cancel all other coroutines
+            and shut down the loop), then this determines the kind of exception raised out of the loop:
+            - if `False` then raise just that error, silently ignoring any errors that occur when cancelling the other
+                coroutines.
+            - if `True` then always raise a `{Base}ExceptionGroup`, whose first sub-exception will be the original
+                error, and whose later sub-exceptions will be any errors that occur whilst cancelling the other
+                coroutines. (Including all the `tinyio.CancelledError`s that indicate successful cancellation.)
+            - if `None` (the default) then raise just the original error if all other coroutines shut down successfully,
+                and raise a `{Base}ExceptionGroup` if any other coroutine raises an exception during shutdown.
+                (Excluding all the `tinyio.CancelledError`s that indicate successful cancellation.)
 
         **Returns:**
 
@@ -56,7 +66,8 @@ class Loop:
             current_coro_ref[0] = coro
             self._check_cycle(waiting_on, coro)
         except BaseException as e:
-            _cleanup(e, waiting_on, current_coro_ref)
+            _cleanup(e, waiting_on, current_coro_ref, exception_group)
+            raise  # if not raising an `exception_group`
         return self._results[coro]
 
     def _check_cycle(self, waiting_on, coro):
@@ -174,7 +185,7 @@ def _strip_frames(e: BaseException, n: int):
     return e.with_traceback(tb)
 
 
-def _cleanup(base_e: BaseException, waiting_on: dict[Coro, list[Coro]], current_coro_ref: list[Coro]) -> Never:
+def _cleanup(base_e: BaseException, waiting_on: dict[Coro, list[Coro]], current_coro_ref: list[Coro], exception_group: None | bool):
     # Oh no! Time to shut everything down. We can get here in two different ways:
     # - One of our coroutines raised an error internally (including being interrupted with a `KeyboardInterrupt`).
     # - An exogenous `KeyboardInterrupt` occurred whilst we were within the loop itself.
@@ -247,28 +258,33 @@ def _cleanup(base_e: BaseException, waiting_on: dict[Coro, list[Coro]], current_
             break
         [coro] = waiting_on[coro]
     base_e.with_traceback(tb)  # pyright: ignore[reportPossiblyUnboundVariable]
-    # Most cancellation errors are single frame tracebacks corresponding to the underlying generator.
-    # A handful of them may be more interesting than this, e.g. if there is a `yield from` or if it's
-    # `run_in_thread` which begins with the traceback from within the thread.
-    # Bump these more-interesting ones to the top.
-    interesting_cancellation_errors = []
-    other_cancellation_errors = []
-    for e in cancellation_errors.values():
-        more_than_one_frame = e.__traceback__ is not None and e.__traceback__.tb_next is not None
-        has_context = e.__context__ is not None
-        if more_than_one_frame or has_context:
-            interesting_cancellation_errors.append(e)
-        else:
-            other_cancellation_errors.append(e)
-    raise BaseExceptionGroup(
-        "An error occured running a `tinyio` loop.\nThe first exception below is the original error. Since it is "
-        "common for each coroutine to only have one other coroutine waiting on it, then we have stitched together "
-        "their tracebacks for as long as that is possible.\n"
-        "The other exceptions are all exceptions that occurred whilst stopping the other coroutines.\n"
-        "(For a debugger that allows for navigating within exception groups, try "
-        "`https://github.com/patrick-kidger/patdb`.)\n",
-        [base_e, *other_errors.values(), *interesting_cancellation_errors, *other_cancellation_errors],  # pyright: ignore[reportPossiblyUnboundVariable]
-    )
+    if exception_group is None:
+        exception_group = len(other_errors) > 0
+        cancellation_errors.clear()
+    if exception_group:
+        # Most cancellation errors are single frame tracebacks corresponding to the underlying generator.
+        # A handful of them may be more interesting than this, e.g. if there is a `yield from` or if it's
+        # `run_in_thread` which begins with the traceback from within the thread.
+        # Bump these more-interesting ones to the top.
+        interesting_cancellation_errors = []
+        other_cancellation_errors = []
+        for e in cancellation_errors.values():
+            more_than_one_frame = e.__traceback__ is not None and e.__traceback__.tb_next is not None
+            has_context = e.__context__ is not None
+            if more_than_one_frame or has_context:
+                interesting_cancellation_errors.append(e)
+            else:
+                other_cancellation_errors.append(e)
+        raise BaseExceptionGroup(
+            "An error occured running a `tinyio` loop.\nThe first exception below is the original error. Since it is "
+            "common for each coroutine to only have one other coroutine waiting on it, then we have stitched together "
+            "their tracebacks for as long as that is possible.\n"
+            "The other exceptions are all exceptions that occurred whilst stopping the other coroutines.\n"
+            "(For a debugger that allows for navigating within exception groups, try "
+            "`https://github.com/patrick-kidger/patdb`.)\n",
+            [base_e, *other_errors.values(), *interesting_cancellation_errors, *other_cancellation_errors],  # pyright: ignore[reportPossiblyUnboundVariable]
+        )
+    # else let the parent `raise` the original error.
 
 
 def _invalid(out):

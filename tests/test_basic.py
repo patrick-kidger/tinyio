@@ -133,10 +133,5 @@ def test_cycle():
         yield [ff, gg]
 
     loop = tinyio.Loop()
-    with pytest.raises(BaseExceptionGroup) as matcher:
-        loop.run(h())
-    [cycle, cancel1, cancel2] = matcher.value.exceptions
-    assert type(cancel1) is tinyio.CancelledError
-    assert type(cancel2) is tinyio.CancelledError
     with pytest.raises(RuntimeError, match="Cycle detected in `tinyio` loop"):
-        raise cycle
+        loop.run(h(), exception_group=False)
