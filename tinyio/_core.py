@@ -26,7 +26,7 @@ class Loop:
         # This makes it possible to perform multiple `.run`s, with coroutines that may internally await on the same
         # coroutines as each other.
         # It's a weakref as if no-one else has access to them then they cannot appear in our event loop, so we don't
-        # need to their results around for the above use-case.
+        # need to keep their results around for the above use-case.
         self._results = weakref.WeakKeyDictionary()
 
     def run(self, coro: Coro[_Return], exception_group: None | bool = None) -> _Return:
