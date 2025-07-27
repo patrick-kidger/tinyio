@@ -93,7 +93,7 @@ This gives every coroutine a chance to shut down gracefully. Debuggers like [`pa
 ## FAQ
 
 <details>
-<summary>Why <code>yield</code> -- why not <code>await</code> like is normally seen for coroutines?</summary>
+<summary>Why <code>yield</code> - why not <code>await</code> like is normally seen for coroutines?</summary>
 <br>
 
 The reason is that `await` does not offer a suspension point to an event loop (it just calls `__await__` and maybe *that* offers a suspension point), so if we wanted to use that syntax then we'd need to replace `yield coro` with something like `await tinyio.Task(coro)`. The traditional syntax is not worth the extra class.
