@@ -6,7 +6,7 @@ import types
 import warnings
 import weakref
 from collections.abc import Generator
-from typing import Any, Never, TypeVar, TypeAlias
+from typing import Any, TypeAlias, TypeVar
 
 
 #
@@ -185,7 +185,12 @@ def _strip_frames(e: BaseException, n: int):
     return e.with_traceback(tb)
 
 
-def _cleanup(base_e: BaseException, waiting_on: dict[Coro, list[Coro]], current_coro_ref: list[Coro], exception_group: None | bool):
+def _cleanup(
+    base_e: BaseException,
+    waiting_on: dict[Coro, list[Coro]],
+    current_coro_ref: list[Coro],
+    exception_group: None | bool,
+):
     # Oh no! Time to shut everything down. We can get here in two different ways:
     # - One of our coroutines raised an error internally (including being interrupted with a `KeyboardInterrupt`).
     # - An exogenous `KeyboardInterrupt` occurred whilst we were within the loop itself.

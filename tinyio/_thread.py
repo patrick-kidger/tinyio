@@ -3,15 +3,14 @@ import threading
 from collections.abc import Callable
 from typing import ParamSpec, TypeVar, cast
 
-from ._core import Coro, CancelledError
+from ._core import CancelledError, Coro
+
 
 _Params = ParamSpec("_Params")
 _Return = TypeVar("_Return")
 
 
-def run_in_thread(
-    fn: Callable[_Params, _Return], /, *args: _Params.args, **kwargs: _Params.kwargs
-) -> Coro[_Return]:
+def run_in_thread(fn: Callable[_Params, _Return], /, *args: _Params.args, **kwargs: _Params.kwargs) -> Coro[_Return]:
     """A `tinyio` coroutine for running the blocking function `fn(*args, **kwargs)` in a thread.
 
     If this coroutine is cancelled then the cancellation will be raised in the thread as well; vice-versa if the

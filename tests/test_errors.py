@@ -281,7 +281,14 @@ def test_error_from_thread(exception_group):
         runtime = catcher.value
         assert type(runtime) is RuntimeError
         assert str(runtime) == "Kaboom"
-        assert _flat_tb(runtime) == ["test_error_from_thread", "foo", "bar", "target", "blocking_operation", "sub_blocking_operation"]
+        assert _flat_tb(runtime) == [
+            "test_error_from_thread",
+            "foo",
+            "bar",
+            "target",
+            "blocking_operation",
+            "sub_blocking_operation",
+        ]
 
 
 @pytest.mark.parametrize("exception_group", (None, False, True))

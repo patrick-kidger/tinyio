@@ -33,8 +33,8 @@ include = ["tinyio", "tests"]
 
 [tool.ruff]
 extend-include = ["*.ipynb"]
-src = []
 line-length = 120
+src = []
 
 [tool.ruff.lint]
 fixable = ["I001", "F401", "UP"]

@@ -14,6 +14,7 @@ def _add_two(x: int) -> tinyio.Coro[int]:
     z = yield _add_one(y)
     return z
 
+
 def test_basic():
     loop = tinyio.Loop()
     assert loop.run(_add_two(4)) == 6
@@ -45,7 +46,6 @@ def test_diamond():
         a, b = yield [_diamond2(y, 1), _diamond2(y, 2)]
         return a + b
 
-
     def _diamond2(y: tinyio.Coro[int], factor: int):
         z = yield y
         return z * factor
@@ -58,7 +58,6 @@ def test_sleep():
     def _slow_add_one(x: int):
         yield tinyio.sleep(0.1)
         return x + 1
-
 
     def _big_gather(x: int):
         out = yield [_slow_add_one(x) for _ in range(100)]
