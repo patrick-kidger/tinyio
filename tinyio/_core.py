@@ -1,6 +1,5 @@
 import collections as co
 import dataclasses
-import time
 import traceback
 import types
 import warnings
@@ -157,15 +156,6 @@ class CancelledError(BaseException):
 
 Loop.__module__ = "tinyio"
 CancelledError.__module__ = "tinyio"
-
-
-def sleep(delay_in_seconds: float) -> Coro[None]:
-    """Sleeps for `delay_in_seconds` many seconds without blocking the event loop."""
-    timeout = time.monotonic() + delay_in_seconds
-    while True:
-        if time.monotonic() > timeout:
-            break
-        yield
 
 
 @dataclasses.dataclass(frozen=True)

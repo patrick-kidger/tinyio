@@ -1,11 +1,13 @@
 import ctypes
 import threading
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from typing import ParamSpec, TypeVar, cast
 
 from ._core import CancelledError, Coro
+from ._sync import Semaphore
 
 
+_T = TypeVar("_T")
 _Params = ParamSpec("_Params")
 _Return = TypeVar("_Return")
 
@@ -15,6 +17,16 @@ def run_in_thread(fn: Callable[_Params, _Return], /, *args: _Params.args, **kwar
 
     If this coroutine is cancelled then the cancellation will be raised in the thread as well; vice-versa if the
     function call raises an error then this will propagate to the coroutine.
+
+    **Arguments:**
+
+    - `fn`: the function to call.
+    - `*args`: arguments to call `fn` with.
+    - `**kwargs`: keyword arguments to call `fn` with.
+
+    **Returns:**
+
+    A coroutine that can be `yield`ed on, returning the output of `fn(*args, **kwargs)`.
     """
 
     is_exception = None
@@ -84,3 +96,33 @@ def run_in_thread(fn: Callable[_Params, _Return], /, *args: _Params.args, **kwar
                 raise
         else:
             return cast(_Return, result)
+
+
+class ThreadPool:
+    """A wrapper around `tinyio.run_in_thread` to launch at most `value` many threads at a time."""
+
+    def __init__(self, max_threads: int):
+        """**Arguments:**
+
+        - `value`: the maximum number of threads to launch at a time.
+        """
+
+        self._semaphore = Semaphore(max_threads)
+
+    def run_in_thread(
+        self, fn: Callable[_Params, _Return], /, *args: _Params.args, **kwargs: _Params.kwargs
+    ) -> Coro[_Return]:
+        """Like `tinyio.run_in_thread(fn, *args, **kwargs)`.
+
+        Usage is `output = yield pool.run_in_thread(...)`
+        """
+        with (yield self._semaphore()):
+            out = yield run_in_thread(fn, *args, **kwargs)
+        return out
+
+    def map(self, fn: Callable[[_T], _Return], /, xs: Iterable[_T]) -> Coro[list[_Return]]:
+        """Like `[tinyio.run_in_thread(fn, x) for x in xs]`.
+
+        Usage is `output_list = pool.map(...)`
+        """
+        return (yield [self.run_in_thread(fn, x) for x in xs])
