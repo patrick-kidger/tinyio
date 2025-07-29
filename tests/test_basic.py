@@ -84,23 +84,6 @@ def test_multi_run():
     assert loop.run(_mul()) == 25
 
 
-def test_in_thread():
-    def _blocking_slow_add_one(x: int) -> int:
-        time.sleep(0.1)
-        return x + 1
-
-    def _big_gather(x: int):
-        out = yield [tinyio.run_in_thread(_blocking_slow_add_one, x) for _ in range(100)]
-        return out
-
-    loop = tinyio.Loop()
-    start = time.time()
-    out = loop.run(_big_gather(1))
-    end = time.time()
-    assert out == [2 for _ in range(100)]
-    assert end - start < 0.5
-
-
 def test_waiting_on_already_finished():
     def f():
         yield

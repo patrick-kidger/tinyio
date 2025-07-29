@@ -26,9 +26,9 @@ assert out == (4, 5)
 - Somewhat unusually, our syntax uses `yield` rather than `await`, but the behaviour is the same. Await another coroutine with `yield coro`. Await on multiple with `yield [coro1, coro2, ...]` (a 'gather' in asyncio terminology; a 'nursery' in trio terminology).
 - An error in one coroutine will cancel all coroutines across the entire event loop.
     - If the erroring coroutine is sequentially depended on by a chain of other coroutines, then we chain their tracebacks for easier debugging.
-    - Errors even propagate to and from synchronous operations ran in threads.
+    - Errors propagate to and from synchronous operations ran in threads.
 - Can nest tinyio loops inside each other, none of this one-per-thread business.
-- Ludicrously simple. No need for futures, tasks, etc. Here's the full API:
+- Ludicrously simple. No need for futures, tasks, etc. Here's the entirety of the day-to-day API:
     ```python
     tinyio.Loop
     tinyio.run_in_thread
@@ -44,7 +44,7 @@ pip install tinyio
 
 ## Documentation
 
-#### Loops
+### Loops
 
 Create a loop with `tinyio.Loop()`. It has a single method, `.run(coro)`, which consumes a coroutine, and which returns the output of that coroutine.
 
@@ -57,9 +57,10 @@ Coroutines can `yield` four possible things:
 
 You can safely `yield` the same coroutine multiple times, e.g. perhaps four coroutines have a diamond dependency pattern, with two coroutines each depending on a single shared one.
 
-#### Threading
+### Threading
 
-Synchronous functions can be ran in threads using `tinyio.run_in_thread(fn, *args, **kwargs)`, which returns a coroutine you can `yield` on:
+Blocking functions can be ran in threads using `tinyio.run_in_thread(fn, *args, **kwargs)`, which gives a coroutine you can `yield` on. Example:
+
 ```python
 import time, tinyio
 
@@ -75,13 +76,12 @@ loop = tinyio.Loop()
 out = loop.run(foo(x=1))  # runs in one second, not three
 assert out == [2, 2, 2]
 ```
-The thread will call `fn(*args, **kwargs)`.
 
-#### Sleeping
+### Sleeping
 
 This is `tinyio.sleep(delay_in_seconds)`, which is a coroutine you can `yield` on.
 
-#### Error propagation
+### Error propagation
 
 If any coroutine raises an error, then:
 
@@ -90,6 +90,100 @@ If any coroutine raises an error, then:
 3. The original error is raised out of `loop.run(...)`. This behaviour can be configured (e.g. to collect errors into a `BaseExceptionGroup`) by setting `loop.run(..., exception_group=None/False/True)`.
 
 This gives every coroutine a chance to shut down gracefully. Debuggers like [`patdb`](https://github.com/patrick-kidger/patdb) offer the ability to navigate across exceptions in an exception group, allowing you to inspect the state of all coroutines that were related to the error.
+
+### Batteries-included
+
+We ship batteries-included with a collection of standard operations, all built on top of just the functionality you've already seen.
+
+<details><summary>Click to expand</summary>
+
+```python
+tinyio.add_done_callback        tinyio.Semaphore
+tinyio.AsCompleted              tinyio.ThreadPool
+tinyio.Barrier                  tinyio.timeout
+tinyio.Event                    tinyio.TimeoutError
+tinyio.Lock
+```
+None of these require special support from the event loop, they are all just simple implementations that you could have written yourself :)
+
+---
+
+- `tinyio.add_done_callback(coro, success_callback)`
+
+    Used as `yield {tinyio.add_done_callback(coro, success_callback)}`.
+
+    This wraps `coro` so that `success_callback(out)` is called on its output once it completes. Note the `{...}` above, indicating calling this in nonblocking fashion (otherwise you could just directly call the callbacks yourself).
+
+---
+
+- `tinyio.AsCompleted({coro1, coro2, ...})`
+
+    This schedules multiple coroutines in the background (like `yield {coro1, coro2, ...}`), and then offers their results in the order they complete.
+
+    This is iterated over in the following way, using its `.done()` and `.get()` methods:
+    ```python
+    def main():
+        iterator = tinyio.AsCompleted({coro1, coro2, coro3})
+        while not iterator.done():
+            x = yield iterator.get()
+    ```
+
+---
+
+- `tinyio.Barrier(value)`
+
+    This has a single method `barrier.wait()`, which is a coroutine you can `yield` on. Once `value` many coroutines have yielded on this method then it will unblock.
+
+---
+
+- `tinyio.Event()`
+
+    This has a method `.wait()`, which is a coroutine you can `yield` on. This will unblock once its `.set()` method is called (typically from another coroutine). It also has a `is_set()` method for checking whether it has been set.
+
+---
+
+- `tinyio.Lock()`
+
+    This is just a convenience for `tinyio.Semaphore(value=1)`, see below.
+
+---
+
+- `tinyio.Semaphore(value)`
+
+    This manages an internal counter that is initialised at `value`, is decremented when entering a region, and incremented when exiting. This blocks if this counter is at zero. In this way, at most `value` coroutines may acquire the semaphore at a time.
+
+    This is used as:
+    ```python
+    semaphore = Semaphore(value)
+
+    ...
+
+    with (yield semaphore()):
+        ...
+    ```
+
+---
+
+- `tinyio.timeout(coro, timeout_in_seconds)`
+
+    This is a coroutine you can `yield` on, used  as `output, success = yield tinyio.timeout(coro, timeout_in_seconds)`.
+    
+    This runs `coro` for at most `timeout_in_seconds`. If it succeeds in that time then the pair `(output, True)` is returned . Else this will return `(None, False)`, and `coro` will be halted by raising `tinyio.TimeoutError` inside it.
+
+---
+
+- `tinyio.ThreadPool(max_threads)`
+
+    This is equivalent to making multiple `tinyio.run_in_thread` calls, but will limit the number of threads to at most `max_threads`. Additional work after that will block until a thread becomes available.
+
+    This has two methods:
+
+    - `.run_in_thread(fn, *args, **kwargs)`, which is a coroutine you can `yield` on. This is equivalent to `yield tinyio.run_in_thread(fn, *args, **kwargs)`.
+    - `.map(fn, xs)`, which is a coroutine you can `yield` on. This is equivalent to `yield [tinyio.run_in_thread(fn, x) for x in xs]`.
+ 
+---
+
+</details>
 
 ## FAQ
 
