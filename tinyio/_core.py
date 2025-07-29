@@ -110,6 +110,14 @@ class Loop:
             match out:
                 case None:
                     queue.appendleft(_Todo(todo.coro, None))
+                case set():
+                    queue.appendleft(_Todo(todo.coro, None))
+                    for out_i in out:
+                        if not isinstance(out_i, Generator):
+                            todo.coro.throw(_invalid(out))
+                        if out_i not in waiting_on.keys():
+                            queue.appendleft(_Todo(out_i, None))
+                            waiting_on[out_i] = []
                 case list():
                     num_done = 0
                     for out_i in out:
