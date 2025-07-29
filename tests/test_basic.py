@@ -134,3 +134,92 @@ def test_cycle():
     loop = tinyio.Loop()
     with pytest.raises(RuntimeError, match="Cycle detected in `tinyio` loop"):
         loop.run(h(), exception_group=False)
+
+
+@pytest.mark.parametrize("wait_on_f", (False, True))
+def test_background(wait_on_f: bool):
+    val = False
+    done = False
+
+    def f():
+        while val is False:
+            yield
+        return 3
+
+    def g():
+        nonlocal val
+        val = True
+        yield
+
+    def h():
+        nonlocal done
+        ff = f()
+        out = yield {ff}
+        assert out is None
+        yield g()
+        if wait_on_f:
+            out = yield ff
+            assert out == 3
+        done = True
+
+    loop = tinyio.Loop()
+    loop.run(h())
+    assert done
+
+
+@pytest.mark.parametrize("wait_on_f", (False, True))
+def test_background_already_waiting(wait_on_f: bool):
+    val = False
+    done = False
+
+    def f():
+        while val is False:
+            yield
+        return 3
+
+    ff = f()
+
+    def g():
+        nonlocal val
+        val = True
+        yield
+
+    def h():
+        nonlocal done
+        out = yield {ff}
+        assert out is None
+        yield g()
+        if wait_on_f:
+            out = yield ff
+            assert out == 3
+        done = True
+
+    def i():
+        yield [ff, h()]
+
+    loop = tinyio.Loop()
+    loop.run(i())
+    assert done
+
+
+def test_background_multiple_yields():
+    done = False
+
+    def f():
+        yield
+        return 3
+
+    def g():
+        nonlocal done
+        ff = f()
+        yield {ff}
+        yield {ff}
+        x = yield ff
+        y = yield ff
+        assert x == 3
+        assert y == 3
+        done = True
+
+    loop = tinyio.Loop()
+    loop.run(g())
+    assert done
