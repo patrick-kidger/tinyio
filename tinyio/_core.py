@@ -49,6 +49,8 @@ class Loop:
 
         The final `return` from `coro`.
         """
+        if not isinstance(coro, Generator):
+            raise ValueError("Invalid input `coro`, which is not a coroutine (a function using `yield` statements).")
         queue: co.deque[_Todo] = co.deque()
         waiting_on: dict[Coro, list[Coro]] = {}
         waiting_for: dict[Coro, _WaitingFor] = {}
