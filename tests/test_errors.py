@@ -190,16 +190,11 @@ def test_error_to_thread(exception_group):
         assert marker is True
         if exception_group is True:
             assert type(catcher.value) is BaseExceptionGroup
-            [raising, cancelled1, cancelled2] = catcher.value.exceptions
+            [raising, cancelled] = catcher.value.exceptions
             assert type(raising) is RuntimeError and str(raising) == "Raising!"
             assert _flat_tb(raising) == [workflow.__name__, "cancel", "cancel2"]
-            assert type(cancelled1) is tinyio.CancelledError
-            assert type(cancelled2) is tinyio.CancelledError
-            flat1 = _flat_tb(cancelled1)
-            flat2 = _flat_tb(cancelled2)
-            true_flat1 = ["target", "blocking_operation"]
-            true_flat2 = ["wait"]
-            assert (flat1 == true_flat1 and flat2 == true_flat2) or (flat1 == true_flat2 and flat2 == true_flat1)
+            assert type(cancelled) is tinyio.CancelledError
+            assert _flat_tb(cancelled) == ["target", "blocking_operation"]
         else:
             raising = catcher.value
             assert type(raising) is RuntimeError and str(raising) == "Raising!"
@@ -239,25 +234,19 @@ def test_error_to_thread_with_context(exception_group):
         assert type(runtime) is RuntimeError
         assert str(runtime) == "Kaboom"
         assert _flat_tb(runtime) == ["test_error_to_thread_with_context", "foo", "bar", "baz"]
-        return
-    elif exception_group is True:
-        assert type(catcher.value) is BaseExceptionGroup
-        runtime, value, cancelled = catcher.value.exceptions
-        assert type(cancelled) is tinyio.CancelledError
-        assert _flat_tb(cancelled) == ["wait"]
     else:
         assert type(catcher.value) is ExceptionGroup
         runtime, value = catcher.value.exceptions
-    assert type(runtime) is RuntimeError
-    assert str(runtime) == "Kaboom"
-    assert _flat_tb(runtime) == ["foo", "bar", "baz"]
-    assert type(value) is ValueError
-    assert str(value) == "Responding improperly to cancellation"
-    assert _flat_tb(value) == ["target", "blocking_operation"]
-    cancelled_context = value.__context__
-    assert cancelled_context is value.__cause__
-    assert type(cancelled_context) is tinyio.CancelledError
-    assert _flat_tb(cancelled_context) == ["blocking_operation", "sub_blocking_operation"]
+        assert type(runtime) is RuntimeError
+        assert str(runtime) == "Kaboom"
+        assert _flat_tb(runtime) == ["foo", "bar", "baz"]
+        assert type(value) is ValueError
+        assert str(value) == "Responding improperly to cancellation"
+        assert _flat_tb(value) == ["target", "blocking_operation"]
+        cancelled_context = value.__context__
+        assert cancelled_context is value.__cause__
+        assert type(cancelled_context) is tinyio.CancelledError
+        assert _flat_tb(cancelled_context) == ["blocking_operation", "sub_blocking_operation"]
 
 
 @pytest.mark.parametrize("exception_group", (None, False, True))

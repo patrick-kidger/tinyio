@@ -19,6 +19,8 @@ def _test_done_callback():
     assert len(out) == 0
     event1.set()
     yield event3.wait()
+    for _ in range(20):
+        yield
     assert out == [2, 1]
 
 
