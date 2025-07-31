@@ -1,3 +1,4 @@
+import contextlib
 import ctypes
 import threading
 from collections.abc import Callable, Iterable
@@ -39,8 +40,15 @@ def run_in_thread(fn: Callable[_Params, _Return], /, *args: _Params.args, **kwar
             result = fn(*args, **kwargs)
             is_exception = False
         except BaseException as e:
-            result = e
-            is_exception = True
+            try:
+                result = e
+                is_exception = True
+            except BaseException:
+                # We have an `except` here just in case we were already within the `except` block due to an error from
+                # within the thread, whilst our `ctypes` error below triggers.
+                result = e
+                is_exception = True
+                raise
         finally:
             event.set()
 
@@ -51,15 +59,32 @@ def run_in_thread(fn: Callable[_Params, _Return], /, *args: _Params.args, **kwar
         yield event.wait()
     except BaseException as e:
         # We can end up here if an `tinyio.CancelledError` arises out of the `yield`, or from an exogeneous
-        # `KeyboardInterrupt`, or from re-raising the error out of our thread.
-        thread_id = t.ident
-        assert thread_id is not None
-        # Raise a `CancelledError` in the thread that is running the task. This allows the thread to do any cleanup.
-        # This is not readily supported and needs to be done via ctypes, see: https://gist.github.com/liuw/2407154.
-        ctypes.pythonapi.PyThreadState_SetAsyncExc(ctypes.c_long(thread_id), ctypes.py_object(CancelledError))
-        t.join()
+        # `KeyboardInterrupt`.
+
+        # First check whether we have a race condition: that our thread itself produced an error whilst we were being
+        # cancelled due to another error. If this is the case then we suppress the warning in the core event loop about
+        # resource cleanup.
+        # This is best-effort as our thread may still crash with its own exception between now and the end of this
+        # function.
+        already_error = is_exception is True
+
+        # Second, cancel the thread if necessary. This `event.is_set()` isn't load-bearing, it's just a code cleanliness
+        # thing, as raising the `CancelledError` in the thread is a no-op if the thread has already terminated.
+        # (And in principle the thread may terminate after we check the event but before we try raising the exception.)
+        if not event.is_set():
+            thread_id = t.ident
+            assert thread_id is not None
+            # Raise a `CancelledError` in the thread that is running the task. This allows the thread to do any cleanup.
+            # This is not readily supported and needs to be done via ctypes, see: https://gist.github.com/liuw/2407154.
+            ctypes.pythonapi.PyThreadState_SetAsyncExc(ctypes.c_long(thread_id), ctypes.py_object(CancelledError))
+            t.join()
+
         # Our thread above has now completed.
-        if is_exception and type(e) is CancelledError:
+        # We can `is_exception is True` either because the thread already crashed, or from our `ctypes` crash above.
+        # We can have `is_exception is False` if the the thread managed to finish successfully whilst we are in this
+        # `except` block.
+        # I don't think we can have `is_exception is None`.
+        if is_exception is True and type(e) is CancelledError:
             # We were cancelled.
             #
             # Note that we raise this regardless of whether `result` is itself a `CancelledError`. It's probably the
@@ -84,11 +109,14 @@ def run_in_thread(fn: Callable[_Params, _Return], /, *args: _Params.args, **kwar
                 e.__traceback__ = e.__traceback__.tb_next
                 e.__context__ = context
                 e.__cause__ = cause
+                with contextlib.suppress(Exception):
+                    e.__tinyio_no_warn__ = already_error  # pyright: ignore[reportAttributeAccessIssue]
                 raise
         else:
             # Probably a `KeyboardInterrupt`, forward it on.
             raise
     else:
+        assert is_exception is not None
         if is_exception:
             try:
                 raise cast(BaseException, result)

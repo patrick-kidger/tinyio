@@ -318,6 +318,8 @@ def _cleanup(
         except BaseException as e:
             # Skipped frame is the `coro.throw` above.
             other_errors[coro] = _strip_frames(e, 1)
+            if getattr(e, "__tinyio_no_warn__", False):
+                continue
             details = "".join(traceback.format_exception_only(e)).strip()
             what_did = f"raised the exception `{details}`."
         else:

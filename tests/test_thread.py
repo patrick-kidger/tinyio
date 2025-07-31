@@ -1,5 +1,6 @@
 import threading
 import time
+import warnings
 
 import pytest
 import tinyio
@@ -51,3 +52,21 @@ def test_thread_pool(with_map: bool):
     assert not invalid_counter
     loop.run(_run(3))
     assert invalid_counter
+
+
+def test_simultaneous_errors():
+    def _raises():
+        raise RuntimeError
+
+    def _run():
+        out = yield [tinyio.run_in_thread(_raises) for _ in range(10)]
+        return out
+
+    loop = tinyio.Loop()
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        with pytest.raises(BaseExceptionGroup) as catcher:
+            loop.run(_run())
+    assert len(catcher.value.exceptions) > 1
+    for e in catcher.value.exceptions:
+        assert type(e) is RuntimeError
