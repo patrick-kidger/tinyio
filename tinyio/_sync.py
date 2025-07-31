@@ -3,6 +3,26 @@ import contextlib
 from ._core import Coro
 
 
+class Event:
+    """A marker than something has happened."""
+
+    def __init__(self):
+        self._set = False
+
+    def is_set(self):
+        return self._set
+
+    def set(self):
+        self._set = True
+
+    def clear(self):
+        self._set = False
+
+    def wait(self):
+        while not self._set:
+            yield
+
+
 class Semaphore:
     """Limits coroutines so that at most `value` of them can access a resource concurrently.
 
@@ -23,12 +43,18 @@ class Semaphore:
         if value <= 0:
             raise ValueError("`tinyio.Semaphore(value=...)` must be positive.")
         self._value = value
+        self._event = Event()
+        self._event.set()
 
     def __call__(self) -> Coro[contextlib.AbstractContextManager[None]]:
-        while self._value <= 0:
-            assert self._value >= 0
-            yield
+        while True:
+            yield self._event.wait()
+            if self._event.is_set():
+                break
+        assert self._value > 0
         self._value -= 1
+        if self._value == 0:
+            self._event.clear()
         return _close_semaphore(self, [False])
 
 
@@ -41,6 +67,7 @@ def _close_semaphore(semaphore: Semaphore, cell: list[bool]):
         yield
     finally:
         semaphore._value += 1
+        semaphore._event.set()
 
 
 class Lock:
@@ -59,27 +86,12 @@ class Barrier:
     def __init__(self, value: int):
         self._count = 0
         self._value = value
+        self._event = Event()
 
     def wait(self):
         count = self._count
         self._count += 1
-        while self._count < self._value:
-            yield
+        if self._count == self._value:
+            self._event.set()
+        yield self._event.wait()
         return count
-
-
-class Event:
-    """A marker than something has happened."""
-
-    def __init__(self):
-        self._set = False
-
-    def is_set(self):
-        return self._set
-
-    def set(self):
-        self._set = True
-
-    def wait(self):
-        while not self._set:
-            yield
