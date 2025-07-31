@@ -1,11 +1,13 @@
 import collections as co
 import dataclasses
+import graphlib
+import threading
 import traceback
 import types
 import warnings
 import weakref
 from collections.abc import Generator
-from typing import Any, TypeAlias, TypeVar
+from typing import Any, TypeAlias, TypeVar, cast
 
 
 #
@@ -15,6 +17,92 @@ from typing import Any, TypeAlias, TypeVar
 
 _Return = TypeVar("_Return")
 Coro: TypeAlias = Generator[Any, Any, _Return]
+
+
+@dataclasses.dataclass(frozen=True)
+class _Todo:
+    coro: Coro
+    value: Any
+
+
+class Event:
+    """A marker that something has happened."""
+
+    def __init__(self):
+        self._value = False
+        self._waiting_fors = dict[Coro, _WaitingFor]()
+        self._lock = threading.Lock()
+
+    def is_set(self):
+        return self._value
+
+    def set(self):
+        # This is a user-visible class, so they could be doing anything with it - in particular multiple threads may
+        # call `.set` simultaneously.
+        with self._lock:
+            if not self._value:
+                to_delete = []
+                for coro, waiting_for in self._waiting_fors.items():
+                    waiting_for.decrement()
+                    if waiting_for.counter == 0:
+                        to_delete.append(coro)
+                # Deleting them here isn't necessary for logical correctness, but is done just to allow things to be
+                # GC'd. As an `Event` is user-supplied then it could have anything holding references to it, so this is
+                # the appropriate point to allow our internals to be GC'd as soon as possible.
+                for coro in to_delete:
+                    del self._waiting_fors[coro]
+            self._value = True
+
+    def wait(self) -> Coro[None]:
+        # Lie about the return type, this is an implementation detail that should otherwise feel like a coroutine.
+        return _Wait(self, used=False)  # pyright: ignore[reportReturnType]
+
+    def _register(self, waiting_for: "_WaitingFor") -> None:
+        # Here we need the lock in case `self.set()` is being called at the same time as this method. Importantly, this
+        # is the same lock as is used in `self.set()`.
+        with self._lock:
+            if self._value:
+                waiting_for.decrement()
+            else:
+                assert waiting_for.coro not in self._waiting_fors.keys()
+                self._waiting_fors[waiting_for.coro] = waiting_for
+
+
+@dataclasses.dataclass(frozen=False)
+class _Wait:
+    event: Event
+    used: bool
+
+
+@dataclasses.dataclass(frozen=False)
+class _WaitingFor:
+    counter: int
+    coro: Coro
+    out: _Wait | Coro | list[_Wait | Coro]
+    wake_loop: threading.Event
+    results: weakref.WeakKeyDictionary[Coro, Any]
+    queue: co.deque[_Todo]
+    lock: threading.Lock
+
+    def decrement(self):
+        with self.lock:
+            assert self.counter > 0
+            self.counter -= 1
+            schedule = self.counter == 0
+        if schedule:
+            self.wake_loop.set()
+            match self.out:
+                case None:
+                    result = None
+                case _Wait():
+                    result = None
+                case Generator():
+                    result = self.results[self.out]
+                case list():
+                    result = [None if isinstance(out_i, _Wait) else self.results[out_i] for out_i in self.out]
+                case _:
+                    assert False
+            self.queue.appendleft(_Todo(self.coro, result))
 
 
 class Loop:
@@ -49,23 +137,37 @@ class Loop:
 
         The final `return` from `coro`.
         """
+        if isinstance(coro, _Wait):
+
+            def gen(coro=coro):
+                yield coro
+
+            coro = cast(Coro, gen())
         if not isinstance(coro, Generator):
             raise ValueError("Invalid input `coro`, which is not a coroutine (a function using `yield` statements).")
         queue: co.deque[_Todo] = co.deque()
-        waiting_on: dict[Coro, list[Coro]] = {}
-        waiting_for: dict[Coro, _WaitingFor] = {}
         queue.appendleft(_Todo(coro, None))
+        waiting_on = dict[Coro, list[_WaitingFor]]()
         waiting_on[coro] = []
+        wake_loop = threading.Event()
+        wake_loop.set()
         # Loop invariant: always holds a single element. It's not really load-bearing, it's just used for making a nice
         # traceback when we get an error.
         current_coro_ref = [coro]
         try:
-            while len(queue) > 0:
+            while True:
+                if len(queue) == 0:
+                    if len(waiting_on) == 0:
+                        # We're done.
+                        break
+                    else:
+                        self._check_cycle(waiting_on, coro)
+                        wake_loop.wait()
+                wake_loop.clear()
                 todo = queue.pop()
                 current_coro_ref[0] = todo.coro
-                self._step(todo, queue, waiting_on, waiting_for)
+                self._step(todo, queue, waiting_on, wake_loop)
             current_coro_ref[0] = coro
-            self._check_cycle(waiting_on, coro)
         except BaseException as e:
             _cleanup(e, waiting_on, current_coro_ref, exception_group)
             raise  # if not raising an `exception_group`
@@ -73,103 +175,83 @@ class Loop:
 
     def _check_cycle(self, waiting_on, coro):
         del self
-        if len(waiting_on) != 0:
-            import graphlib
-
-            try:
-                graphlib.TopologicalSorter(waiting_on).prepare()
-            except graphlib.CycleError:
-                coro.throw(RuntimeError("Cycle detected in `tinyio` loop. Cancelling all coroutines."))
-            else:
-                assert False, "Something has gone wrong inside the `tinyio` loop."
+        sorter = graphlib.TopologicalSorter({k: [vi.coro for vi in v] for k, v in waiting_on.items()})
+        try:
+            sorter.prepare()
+        except graphlib.CycleError:
+            coro.throw(RuntimeError("Cycle detected in `tinyio` loop. Cancelling all coroutines."))
 
     def _step(
-        self,
-        todo: "_Todo",
-        queue: co.deque["_Todo"],
-        waiting_on: dict[Coro, list[Coro]],
-        waiting_for: dict[Coro, "_WaitingFor"],
+        self, todo: _Todo, queue: co.deque[_Todo], waiting_on: dict[Coro, list[_WaitingFor]], wake_loop: threading.Event
     ) -> None:
         try:
             out = todo.coro.send(todo.value)
         except StopIteration as e:
             self._results[todo.coro] = e.value
-            for coro in waiting_on.pop(todo.coro):
-                coro_waiting_for = waiting_for[coro]
-                coro_waiting_for.count -= 1
-                if coro_waiting_for.count == 0:
-                    del waiting_for[coro]
-                    if isinstance(coro_waiting_for.coros, list):
-                        value = [self._results[g] for g in coro_waiting_for.coros]
-                    else:
-                        value = self._results[coro_waiting_for.coros]
-                    queue.appendleft(_Todo(coro, value))
+            for waiting_for in waiting_on.pop(todo.coro):
+                waiting_for.decrement()
         else:
             original_out = out
-            if single_coroutine := isinstance(out, Generator):
+            if isinstance(out, (_Wait, Generator)):
                 out = [out]
             match out:
                 case None:
                     queue.appendleft(_Todo(todo.coro, None))
                 case set():
+                    for out_i in out:
+                        if isinstance(out_i, Generator):
+                            if out_i not in self._results.keys() and out_i not in waiting_on.keys():
+                                queue.appendleft(_Todo(out_i, None))
+                                waiting_on[out_i] = []
+                        elif isinstance(out_i, _Wait):
+                            # Scheduling an `event.wait()` in the background corresponds to doing nothing.
+                            todo.coro.throw(
+                                RuntimeError(
+                                    "Do not yield `{event.wait(), ...}`, it is meangless to both wait on an event and "
+                                    "schedule it in the background."
+                                )
+                            )
+                        else:
+                            todo.coro.throw(_invalid(original_out))
                     queue.appendleft(_Todo(todo.coro, None))
-                    for out_i in out:
-                        if not isinstance(out_i, Generator):
-                            todo.coro.throw(_invalid(out))
-                        if out_i not in waiting_on.keys():
-                            queue.appendleft(_Todo(out_i, None))
-                            waiting_on[out_i] = []
                 case list():
-                    num_done = 0
+                    waiting_for = _WaitingFor(
+                        len(out), todo.coro, original_out, wake_loop, self._results, queue, threading.Lock()
+                    )
+                    seen_events = set()
                     for out_i in out:
-                        if not isinstance(out_i, Generator):
-                            # Not just a direct `raise` as we need to shut down this coroutine too + this gives a
-                            # nicer stack trace.
-                            todo.coro.throw(_invalid(out))
-                        if out_i in self._results.keys():
-                            # Already finished.
-                            num_done += 1
-                        elif out_i in waiting_on.keys():
-                            # Already in queue; someone else is waiting on this coroutine too.
-                            waiting_on[out_i].append(todo.coro)
+                        if isinstance(out_i, Generator):
+                            if out_i in self._results.keys():
+                                waiting_for.decrement()
+                            elif out_i in waiting_on.keys():
+                                waiting_on[out_i].append(waiting_for)
+                            else:
+                                queue.appendleft(_Todo(out_i, None))
+                                waiting_on[out_i] = [waiting_for]
+                        elif isinstance(out_i, _Wait):
+                            if out_i.used:
+                                todo.coro.throw(
+                                    RuntimeError(
+                                        "Do not yield `event.wait()` multiple times. Make a new `.wait()` call instead."
+                                    )
+                                )
+                            out_i.used = True
+                            if out_i.event in seen_events:
+                                waiting_for.decrement()
+                            else:
+                                out_i.event._register(waiting_for)
+                            seen_events.add(out_i.event)
                         else:
-                            # New coroutine
-                            waiting_on[out_i] = [todo.coro]
-                            queue.appendleft(_Todo(out_i, None))
-                    if num_done == len(out):
-                        # All requested coroutines already finished; immediately queue up original coroutine.
-                        # again.
-                        if single_coroutine:
-                            queue.appendleft(_Todo(todo.coro, self._results[original_out]))
-                        else:
-                            queue.appendleft(_Todo(todo.coro, [self._results[out_i] for out_i in out]))
-                    else:
-                        assert todo.coro not in waiting_for.keys()
-                        waiting_for[todo.coro] = _WaitingFor(
-                            len(out) - num_done, original_out if single_coroutine else out
-                        )
+                            todo.coro.throw(_invalid(original_out))
                 case _:
-                    todo.coro.throw(_invalid(out))
+                    todo.coro.throw(_invalid(original_out))
 
 
 class CancelledError(BaseException):
     """Raised when a `tinyio` coroutine is cancelled due an error in another coroutine."""
 
 
-Loop.__module__ = "tinyio"
 CancelledError.__module__ = "tinyio"
-
-
-@dataclasses.dataclass(frozen=True)
-class _Todo:
-    coro: Coro
-    value: Any
-
-
-@dataclasses.dataclass(frozen=False)
-class _WaitingFor:
-    count: int
-    coros: Coro | list[Coro]
 
 
 #
@@ -187,7 +269,7 @@ def _strip_frames(e: BaseException, n: int):
 
 def _cleanup(
     base_e: BaseException,
-    waiting_on: dict[Coro, list[Coro]],
+    waiting_on: dict[Coro, list[_WaitingFor]],
     current_coro_ref: list[Coro],
     exception_group: None | bool,
 ):
@@ -261,7 +343,8 @@ def _cleanup(
             # Either no-one is waiting on us and we're at the root, or multiple are waiting and we can't uniquely append
             # tracebacks any more.
             break
-        [coro] = waiting_on[coro]
+        [waiting_for] = waiting_on[coro]
+        coro = waiting_for.coro
     base_e.with_traceback(tb)  # pyright: ignore[reportPossiblyUnboundVariable]
     if exception_group is None:
         exception_group = len(other_errors) > 0
@@ -293,7 +376,7 @@ def _cleanup(
 
 
 def _invalid(out):
-    msg = f"Invalid yield {out}. Must be either `None`, a coroutine, or a list of coroutines."
+    msg = f"Invalid yield {out}. Must be either `None`, a coroutine, or a list/set of coroutines."
     if type(out) is tuple:
         # We could support this but I find the `[]` visually distinctive.
         msg += (

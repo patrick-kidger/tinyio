@@ -28,16 +28,25 @@ def test_gather():
     assert loop.run(_gather(3)) == [4, 5]
 
 
-def _multi_yield():
-    foo = _add_one(x=3)
-    x = yield foo
-    y = yield foo
-    return x, y
-
-
 def test_multi_yield():
+    def _multi_yield():
+        foo = _add_one(x=3)
+        x = yield foo
+        y = yield foo
+        return x, y
+
     loop = tinyio.Loop()
     assert loop.run(_multi_yield()) == (4, 4)
+
+
+def test_simultaneous_yield():
+    def _simultaneous_yield():
+        foo = _add_one(x=3)
+        x, y = yield [foo, foo]
+        return x, y
+
+    loop = tinyio.Loop()
+    assert loop.run(_simultaneous_yield()) == (4, 4)
 
 
 def test_diamond():
@@ -206,3 +215,25 @@ def test_background_multiple_yields():
     loop = tinyio.Loop()
     loop.run(g())
     assert done
+
+
+def test_no_yield_direct():
+    def f():
+        return 3
+        yield
+
+    loop = tinyio.Loop()
+    assert loop.run(f()) == 3
+
+
+def test_no_yield_indirect():
+    def f():
+        return 3
+        yield
+
+    def g():
+        out = yield f()
+        return out
+
+    loop = tinyio.Loop()
+    assert loop.run(g()) == 3

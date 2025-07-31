@@ -1,4 +1,6 @@
 import contextlib
+import re
+import threading
 import time
 
 import pytest
@@ -119,3 +121,66 @@ def test_event():
     assert done
     assert done2
     assert event.is_set()
+
+
+@pytest.mark.parametrize("is_set", (False, True))
+def test_event_only(is_set: bool):
+    event = tinyio.Event()
+    if is_set:
+        event.set()
+
+    def foo():
+        if not is_set:
+            t = threading.Timer(0.1, lambda: event.set())
+            t.start()
+        yield event.wait()
+
+    loop = tinyio.Loop()
+    loop.run(foo())
+
+
+@pytest.mark.parametrize("is_set", (False, True))
+def test_event_run(is_set: bool):
+    event = tinyio.Event()
+    if is_set:
+        event.set()
+    loop = tinyio.Loop()
+    if not is_set:
+        t = threading.Timer(0.1, lambda: event.set())
+        t.start()
+    loop.run(event.wait())
+
+
+@pytest.mark.parametrize("is_set", (False, True))
+def test_event_double_wait(is_set: bool):
+    event = tinyio.Event()
+    if is_set:
+        event.set()
+
+    def foo():
+        wait = event.wait()
+        if not is_set:
+            t = threading.Timer(0.1, lambda: event.set())
+            t.start()
+        yield wait
+        yield wait
+
+    loop = tinyio.Loop()
+    with pytest.raises(RuntimeError, match=re.escape("Do not yield `event.wait()` multiple times")):
+        loop.run(foo())
+
+
+@pytest.mark.parametrize("is_set", (False, True))
+def test_event_simultaneous_wait(is_set: bool):
+    event = tinyio.Event()
+    if is_set:
+        event.set()
+
+    def _foo():
+        if not is_set:
+            t = threading.Timer(0.1, lambda: event.set())
+            t.start()
+        yield [event.wait(), event.wait()]
+
+    loop = tinyio.Loop()
+    loop.run(_foo())

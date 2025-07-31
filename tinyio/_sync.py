@@ -1,26 +1,7 @@
+import collections as co
 import contextlib
 
-from ._core import Coro
-
-
-class Event:
-    """A marker than something has happened."""
-
-    def __init__(self):
-        self._set = False
-
-    def is_set(self):
-        return self._set
-
-    def set(self):
-        self._set = True
-
-    def clear(self):
-        self._set = False
-
-    def wait(self):
-        while not self._set:
-            yield
+from ._core import Coro, Event
 
 
 class Semaphore:
@@ -43,18 +24,15 @@ class Semaphore:
         if value <= 0:
             raise ValueError("`tinyio.Semaphore(value=...)` must be positive.")
         self._value = value
-        self._event = Event()
-        self._event.set()
+        self._events = co.deque[Event]()
 
     def __call__(self) -> Coro[contextlib.AbstractContextManager[None]]:
-        while True:
-            yield self._event.wait()
-            if self._event.is_set():
-                break
+        if self._value == 0:
+            event = Event()
+            self._events.append(event)
+            yield event.wait()
         assert self._value > 0
         self._value -= 1
-        if self._value == 0:
-            self._event.clear()
         return _CloseSemaphore(self, [False])
 
 
@@ -71,7 +49,9 @@ class _CloseSemaphore:
     def __exit__(self, exc_type, exc_value, exc_tb):
         del exc_type, exc_value, exc_tb
         self._semaphore._value += 1
-        self._semaphore._event.set()
+        if len(self._semaphore._events) > 0:
+            event = self._semaphore._events.popleft()
+            event.set()
 
 
 class Lock:
