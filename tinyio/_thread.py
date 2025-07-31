@@ -4,7 +4,7 @@ from collections.abc import Callable, Iterable
 from typing import ParamSpec, TypeVar, cast
 
 from ._core import CancelledError, Coro
-from ._sync import Semaphore
+from ._sync import Event, Semaphore
 
 
 _T = TypeVar("_T")
@@ -31,6 +31,7 @@ def run_in_thread(fn: Callable[_Params, _Return], /, *args: _Params.args, **kwar
 
     is_exception = None
     result = None
+    event = Event()
 
     def target():
         nonlocal result, is_exception
@@ -40,13 +41,14 @@ def run_in_thread(fn: Callable[_Params, _Return], /, *args: _Params.args, **kwar
         except BaseException as e:
             result = e
             is_exception = True
+        finally:
+            event.set()
 
     t = threading.Thread(target=target)
 
     try:
         t.start()
-        while is_exception is None:
-            yield
+        yield event.wait()
     except BaseException as e:
         # We can end up here if an `tinyio.CancelledError` arises out of the `yield`, or from an exogeneous
         # `KeyboardInterrupt`, or from re-raising the error out of our thread.
