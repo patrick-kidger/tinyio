@@ -191,7 +191,10 @@ class Loop:
 
     def _check_cycle(self, waiting_on, coro):
         del self
-        sorter = graphlib.TopologicalSorter({k: [vi.coro for vi in v] for k, v in waiting_on.items()})
+        sorter = graphlib.TopologicalSorter()
+        for k, v in waiting_on.items():
+            for vi in v:
+                sorter.add(k, vi.coro)
         try:
             sorter.prepare()
         except graphlib.CycleError:
