@@ -55,19 +55,23 @@ class Semaphore:
         self._value -= 1
         if self._value == 0:
             self._event.clear()
-        return _close_semaphore(self, [False])
+        return _CloseSemaphore(self, [False])
 
 
-@contextlib.contextmanager
-def _close_semaphore(semaphore: Semaphore, cell: list[bool]):
-    if cell[0]:
-        raise RuntimeError("Use a new `semaphore()` call in each `with (yield semaphore())`, do not re-use it.")
-    cell[0] = True
-    try:
-        yield
-    finally:
-        semaphore._value += 1
-        semaphore._event.set()
+class _CloseSemaphore:
+    def __init__(self, semaphore: Semaphore, cell: list[bool]):
+        self._semaphore = semaphore
+        self._cell = cell
+
+    def __enter__(self):
+        if self._cell[0]:
+            raise RuntimeError("Use a new `semaphore()` call in each `with (yield semaphore())`, do not re-use it.")
+        self._cell[0] = True
+
+    def __exit__(self, exc_type, exc_value, exc_tb):
+        del exc_type, exc_value, exc_tb
+        self._semaphore._value += 1
+        self._semaphore._event.set()
 
 
 class Lock:

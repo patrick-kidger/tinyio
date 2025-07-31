@@ -1,3 +1,4 @@
+import contextlib
 import time
 
 import pytest
@@ -26,6 +27,26 @@ def test_semaphore():
     assert loop.run(_run(2)) == list(range(50))
     with pytest.raises(RuntimeError):
         loop.run(_run(3))
+
+
+def test_semaphore_reuse():
+    counter = 0
+
+    def _foo(coro):
+        nonlocal counter
+        context = yield coro
+        counter += 1
+        with pytest.raises(RuntimeError, match="do not") if counter == 2 else contextlib.nullcontext():
+            with context:
+                yield
+
+    def _bar():
+        semaphore = tinyio.Semaphore(2)
+        coro = semaphore()
+        yield [_foo(coro), _foo(coro)]
+
+    loop = tinyio.Loop()
+    loop.run(_bar())
 
 
 def test_lock():
