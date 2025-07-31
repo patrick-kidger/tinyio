@@ -1,4 +1,41 @@
+import pytest
 import tinyio
+
+
+def _sleep(x):
+    yield tinyio.sleep(x)
+    return x
+
+
+def test_as_completed():
+    def _run():
+        iterator = tinyio.AsCompleted({_sleep(0.3), _sleep(0.1), _sleep(0.2)})
+        outs = []
+        while not iterator.done():
+            x = yield iterator.get()
+            outs.append(x)
+        return outs
+
+    loop = tinyio.Loop()
+    assert loop.run(_run()) == [0.1, 0.2, 0.3]
+
+
+def test_as_completed_out_of_order():
+    def _run():
+        iterator = tinyio.AsCompleted({_sleep(0.3), _sleep(0.1), _sleep(0.2)})
+        get1 = iterator.get()
+        get2 = iterator.get()
+        get3 = iterator.get()
+        with pytest.raises(RuntimeError, match="which is greater than the number of coroutines"):
+            iterator.get()
+        assert iterator.done()
+        out3 = yield get3
+        out2 = yield get2
+        out1 = yield get1
+        return [out1, out2, out3]
+
+    loop = tinyio.Loop()
+    assert loop.run(_run()) == [0.1, 0.2, 0.3]
 
 
 def _block(event1: tinyio.Event, event2: tinyio.Event, out):
@@ -27,6 +64,31 @@ def _test_done_callback():
 def test_done_callback():
     loop = tinyio.Loop()
     loop.run(_test_done_callback())
+
+
+def test_yield_on_wrapped_coroutine():
+    callbacked = False
+    event = tinyio.Event()
+
+    def _callback(_):
+        nonlocal callbacked
+        callbacked = True
+        event.set()
+
+    def _foo():
+        yield
+        return 3
+
+    foo = _foo()
+
+    def _bar():
+        yield {tinyio.add_done_callback(foo, _callback)}
+        yield event.wait()
+        out = yield foo
+        return out
+
+    loop = tinyio.Loop()
+    assert loop.run(_bar()) == 3
 
 
 # To reinstate if we ever reintroduce error callbacks.
