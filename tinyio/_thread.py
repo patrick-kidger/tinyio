@@ -3,8 +3,8 @@ import threading
 from collections.abc import Callable, Iterable
 from typing import ParamSpec, TypeVar, cast
 
-from ._core import CancelledError, Coro
-from ._sync import Event, Semaphore
+from ._core import CancelledError, Coro, Event
+from ._sync import Semaphore
 
 
 _T = TypeVar("_T")

@@ -166,7 +166,7 @@ def test_event_double_wait(is_set: bool):
         yield wait
 
     loop = tinyio.Loop()
-    with pytest.raises(RuntimeError, match=re.escape("Do not yield `event.wait()` multiple times")):
+    with pytest.raises(RuntimeError, match=re.escape("Do not yield the same `event.wait()` multiple times")):
         loop.run(foo())
 
 

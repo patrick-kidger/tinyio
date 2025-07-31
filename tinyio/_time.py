@@ -4,8 +4,7 @@ import time
 from typing import TypeVar
 
 from ._background import add_done_callback
-from ._core import Coro
-from ._sync import Event
+from ._core import Coro, Event
 from ._thread import run_in_thread
 
 
@@ -47,24 +46,25 @@ def timeout(coro: Coro[_T], timeout_in_seconds: int | float) -> Coro[tuple[None 
     corresponding to whether `coro` completed within the timeout or not.
     """
     done = Event()
-    success = Event()
+    outs = []
 
     def timeout():
         time.sleep(timeout_in_seconds)
         done.set()
 
-    def callback(_):
+    def callback(out):
+        outs.append(out)
         done.set()
-        success.set()
 
+    # Daemon so as not to block interpreter shutdown.
     t = threading.Thread(target=timeout, daemon=True)
     t.start()
     yield {add_done_callback(coro, callback)}
     yield done.wait()
-    if success.is_set():
-        return (yield coro), True
-    else:
-        time.sleep(0.1)
+    if len(outs) == 0:
         with contextlib.suppress(TimeoutError):
             coro.throw(TimeoutError)
         return None, False
+    else:
+        [out] = outs
+        return out, True

@@ -13,6 +13,11 @@ from typing import Any, TypeAlias, TypeVar, cast
 #
 # Loop implementation
 #
+# The main logic is that coroutines produce `_WaitingFor` objects which schedule them back on the loop once all the
+# coroutines they are waiting on have notified them of completion.
+# In addition we special-case `Event`s in the loop, so that threads can use them to notify the loop of completion,
+# without the loop needing to poll for this.
+#
 
 
 _Return = TypeVar("_Return")
@@ -67,6 +72,9 @@ class Event:
                 assert waiting_for.coro not in self._waiting_fors.keys()
                 self._waiting_fors[waiting_for.coro] = waiting_for
 
+    def __bool__(self):
+        raise TypeError("Cannot convert `tinyio.Event` to boolean. Did you mean `event.is_set()`?")
+
 
 @dataclasses.dataclass(frozen=False)
 class _Wait:
@@ -85,12 +93,13 @@ class _WaitingFor:
     lock: threading.Lock
 
     def decrement(self):
+        # We need a lock here as this may be called simultaneously between our event loop and via `Event.set`.
+        # (Though `Event.set` has its only internal lock, that doesn't cover the event loop as well.)
         with self.lock:
             assert self.counter > 0
             self.counter -= 1
             schedule = self.counter == 0
         if schedule:
-            self.wake_loop.set()
             match self.out:
                 case None:
                     result = None
@@ -103,6 +112,9 @@ class _WaitingFor:
                 case _:
                     assert False
             self.queue.appendleft(_Todo(self.coro, result))
+            # If we're callling this function from a thread, and the main event loop is blocked, then use this to notify
+            # the main event loop that it can wake up.
+            self.wake_loop.set()
 
 
 class Loop:
@@ -149,9 +161,10 @@ class Loop:
         queue.appendleft(_Todo(coro, None))
         waiting_on = dict[Coro, list[_WaitingFor]]()
         waiting_on[coro] = []
+        # Loop invariant: `{x.coro for x in queue}.issubset(set(waiting_on.keys()))`
         wake_loop = threading.Event()
         wake_loop.set()
-        # Loop invariant: always holds a single element. It's not really load-bearing, it's just used for making a nice
+        # Loop invariant: `len(current_coro_ref) == 1`. It's not really load-bearing, it's just used for making a nice
         # traceback when we get an error.
         current_coro_ref = [coro]
         try:
@@ -161,7 +174,10 @@ class Loop:
                         # We're done.
                         break
                     else:
+                        # We might have a cycle bug...
                         self._check_cycle(waiting_on, coro)
+                        # ...but hopefully we're just waiting on a thread or exogeneous event to unblock one of our
+                        # coroutines.
                         wake_loop.wait()
                 wake_loop.clear()
                 todo = queue.pop()
@@ -205,9 +221,11 @@ class Loop:
                                 waiting_on[out_i] = []
                         elif isinstance(out_i, _Wait):
                             # Scheduling an `event.wait()` in the background corresponds to doing nothing.
+                            # We could also just replace this with error with a `pass`, as doing this is harmless.
+                            # We make it an error just because that's probably better UX? Seems like a mistake.
                             todo.coro.throw(
                                 RuntimeError(
-                                    "Do not yield `{event.wait(), ...}`, it is meangless to both wait on an event and "
+                                    "Do not `yield {event.wait(), ...}`, it is meangless to both wait on an event and "
                                     "schedule it in the background."
                                 )
                             )
@@ -230,9 +248,12 @@ class Loop:
                                 waiting_on[out_i] = [waiting_for]
                         elif isinstance(out_i, _Wait):
                             if out_i.used:
+                                # I don't think there's any actual harm in this, but it's a weird thing to do. We
+                                # reserve the right for this to mean something more precise in the future.
                                 todo.coro.throw(
                                     RuntimeError(
-                                        "Do not yield `event.wait()` multiple times. Make a new `.wait()` call instead."
+                                        "Do not yield the same `event.wait()` multiple times. Make a new `.wait()` "
+                                        "call instead."
                                     )
                                 )
                             out_i.used = True
