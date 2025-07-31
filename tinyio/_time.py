@@ -1,10 +1,12 @@
 import contextlib
+import threading
 import time
 from typing import TypeVar
 
 from ._background import add_done_callback
 from ._core import Coro
 from ._sync import Event
+from ._thread import run_in_thread
 
 
 _T = TypeVar("_T")
@@ -21,9 +23,7 @@ def sleep(delay_in_seconds: int | float) -> Coro[None]:
 
     A coroutine that just sleeps.
     """
-    timeout = time.monotonic() + delay_in_seconds
-    while time.monotonic() <= timeout:
-        yield
+    yield run_in_thread(time.sleep, delay_in_seconds)
 
 
 class TimeoutError(BaseException):
@@ -47,13 +47,24 @@ def timeout(coro: Coro[_T], timeout_in_seconds: int | float) -> Coro[tuple[None 
     corresponding to whether `coro` completed within the timeout or not.
     """
     done = Event()
-    timeout = time.monotonic() + timeout_in_seconds
-    yield {add_done_callback(coro, lambda _: done.set())}
-    while time.monotonic() <= timeout and not done.is_set():
-        yield
-    if done.is_set():
+    success = Event()
+
+    def timeout():
+        time.sleep(timeout_in_seconds)
+        done.set()
+
+    def callback(_):
+        done.set()
+        success.set()
+
+    t = threading.Thread(target=timeout, daemon=True)
+    t.start()
+    yield {add_done_callback(coro, callback)}
+    yield done.wait()
+    if success.is_set():
         return (yield coro), True
     else:
+        time.sleep(0.1)
         with contextlib.suppress(TimeoutError):
             coro.throw(TimeoutError)
         return None, False
