@@ -86,11 +86,9 @@ class _WaitState(enum.Enum):
 class _Wait:
     def __init__(self, event: Event, timeout_in_seconds: None | int | float):
         self._event = event
+        self._timeout_in_seconds = timeout_in_seconds
         self._waiting_for = None
         self.state = _WaitState.INITIALISED
-        if timeout_in_seconds is not None:
-            timeout_in_seconds = time.monotonic() + timeout_in_seconds
-        self.timeout_in_seconds = timeout_in_seconds
 
     # This is basically just a second `__init__` method. We're not really initialised until this has been called
     # precisely once as well. The reason we have two is that an end-user creates us during `Event.wait()`, and then we
@@ -106,6 +104,10 @@ class _Wait:
             assert self._waiting_for is None
             assert self._event is not None
             self.state = _WaitState.REGISTERED
+            if self._timeout_in_seconds is None:
+                self.timeout_in_seconds = None
+            else:
+                self.timeout_in_seconds = time.monotonic() + self._timeout_in_seconds
             self._waiting_for = waiting_for
             self._event._waits[self] = None
             if self._event.is_set():
