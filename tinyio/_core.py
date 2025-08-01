@@ -2,7 +2,9 @@ import collections as co
 import dataclasses
 import enum
 import graphlib
+import heapq
 import threading
+import time
 import traceback
 import types
 import warnings
@@ -65,9 +67,9 @@ class Event:
                     wait.unnotify_from_event()
                 self._value = False
 
-    def wait(self) -> Coro[None]:
+    def wait(self, timeout_in_seconds: None | int | float = None) -> Coro[None]:
         # Lie about the return type, this is an implementation detail that should otherwise feel like a coroutine.
-        return _Wait(self)  # pyright: ignore[reportReturnType]
+        return _Wait(self, timeout_in_seconds)  # pyright: ignore[reportReturnType]
 
     def __bool__(self):
         raise TypeError("Cannot convert `tinyio.Event` to boolean. Did you mean `event.is_set()`?")
@@ -82,24 +84,28 @@ class _WaitState(enum.Enum):
 
 
 class _Wait:
-    def __init__(self, event: Event):
+    def __init__(self, event: Event, timeout_in_seconds: None | int | float):
         self._event = event
         self._waiting_for = None
-        self._state = _WaitState.INITIALISED
+        self.state = _WaitState.INITIALISED
+        if timeout_in_seconds is not None:
+            timeout_in_seconds = time.monotonic() + timeout_in_seconds
+        self.timeout_in_seconds = timeout_in_seconds
 
     # This is basically just a second `__init__` method. We're not really initialised until this has been called
     # precisely once as well. The reason we have two is that an end-user creates us during `Event.wait()`, and then we
     # need to register on the event loop.
     def register(self, waiting_for: "_WaitingFor") -> None:
         with _global_event_lock:
-            if self._state is not _WaitState.INITIALISED:
+            if self.state is not _WaitState.INITIALISED:
                 waiting_for.coro.throw(
                     RuntimeError(
                         "Do not yield the same `event.wait()` multiple times. Make a new `.wait()` call instead."
                     )
                 )
-            self._state = _WaitState.REGISTERED
             assert self._waiting_for is None
+            assert self._event is not None
+            self.state = _WaitState.REGISTERED
             self._waiting_for = waiting_for
             self._event._waits[self] = None
             if self._event.is_set():
@@ -107,32 +113,38 @@ class _Wait:
 
     def notify_from_event(self):
         with _global_event_lock:
-            assert self._state is _WaitState.REGISTERED
+            assert self.state is _WaitState.REGISTERED
             assert self._waiting_for is not None
-            self._state = _WaitState.NOTIFIED_EVENT
+            self.state = _WaitState.NOTIFIED_EVENT
             self._waiting_for.decrement()
 
     def notify_from_timeout(self):
         with _global_event_lock:
-            assert self._state is _WaitState.REGISTERED
+            assert self.state is _WaitState.REGISTERED
             assert self._waiting_for is not None
-            self._state = _WaitState.NOTIFIED_TIMEOUT
+            self.state = _WaitState.NOTIFIED_TIMEOUT
             self._waiting_for.decrement()
 
     def unnotify_from_event(self):
         with _global_event_lock:
-            assert self._state in {_WaitState.NOTIFIED_EVENT, _WaitState.NOTIFIED_TIMEOUT}
+            assert self.state in {_WaitState.NOTIFIED_EVENT, _WaitState.NOTIFIED_TIMEOUT}
             assert self._waiting_for is not None
-            if self._state is _WaitState.NOTIFIED_EVENT:
+            if self.state is _WaitState.NOTIFIED_EVENT:
                 self._waiting_for.increment()
             # But ignore un-notifies if we've already triggered our timeout.
 
     def cleanup(self):
         with _global_event_lock:
-            assert self._state in {_WaitState.NOTIFIED_EVENT, _WaitState.NOTIFIED_TIMEOUT}
-            self._state = _WaitState.DONE
+            assert self.state in {_WaitState.NOTIFIED_EVENT, _WaitState.NOTIFIED_TIMEOUT}
+            assert self._waiting_for is not None
+            assert self._event is not None
+            self.state = _WaitState.DONE
             self._waiting_for = None
             del self._event._waits[self]
+            self._event = None  # For GC purposes.
+
+    def __lt__(self, other):
+        return self.timeout_in_seconds < other.timeout_in_seconds
 
 
 @dataclasses.dataclass(frozen=False)
@@ -228,6 +240,7 @@ class Loop:
         queue.appendleft(_Todo(coro, None))
         waiting_on = dict[Coro, list[_WaitingFor]]()
         waiting_on[coro] = []
+        wait_heap = []
         # Loop invariant: `{x.coro for x in queue}.issubset(set(waiting_on.keys()))`
         wake_loop = threading.Event()
         wake_loop.set()
@@ -245,11 +258,21 @@ class Loop:
                         self._check_cycle(waiting_on, coro)
                         # ...but hopefully we're just waiting on a thread or exogeneous event to unblock one of our
                         # coroutines.
-                        wake_loop.wait()
+                        timeout = None
+                        wait = None
+                        while len(wait_heap) > 0:
+                            wait = heapq.heappop(wait_heap)
+                            if wait.state != _WaitState.DONE:
+                                timeout = wait.timeout_in_seconds - time.monotonic()
+                                break
+                        not_timed_out = wake_loop.wait(timeout=timeout)
+                        if not not_timed_out:
+                            cast(_Wait, wait).notify_from_timeout()
+                        del timeout, wait, not_timed_out
                 wake_loop.clear()
                 todo = queue.pop()
                 current_coro_ref[0] = todo.coro
-                self._step(todo, queue, waiting_on, wake_loop)
+                self._step(todo, queue, waiting_on, wait_heap, wake_loop)
             current_coro_ref[0] = coro
         except BaseException as e:
             _cleanup(e, waiting_on, current_coro_ref, exception_group)
@@ -272,6 +295,7 @@ class Loop:
         todo: _Todo,
         queue: co.deque[_Todo],
         waiting_on: dict[Coro, list[_WaitingFor]],
+        wait_heap: list[_Wait],
         wake_loop: threading.Event,
     ) -> None:
         try:
@@ -322,6 +346,8 @@ class Loop:
                                 waiting_on[out_i] = [waiting_for]
                         elif isinstance(out_i, _Wait):
                             out_i.register(waiting_for)
+                            if out_i.timeout_in_seconds is not None:
+                                heapq.heappush(wait_heap, out_i)
                         else:
                             todo.coro.throw(_invalid(original_out))
                 case _:
