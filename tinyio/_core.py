@@ -1,5 +1,6 @@
 import collections as co
 import dataclasses
+import enum
 import graphlib
 import threading
 import traceback
@@ -30,70 +31,108 @@ class _Todo:
     value: Any
 
 
+# We need at least some use of locks, as `Event`s are public objects that may interact with user threads. If the
+# internals of our event/wait/waitingfor mechanisms are modified concurrently then it would be very easy for things to
+# go wrong.
+# In particular note that our event loop is one actor that is making modifications, in addition to user threads.
+# For this reason it doesn't suffice to just have a lock around `Event.{set, clear}`.
+# For simplicity, we simply guard all entries into the event/wait/waitingfor mechanism with a single lock. We could try
+# to use some other locking strategy but that seems error-prone.
+_global_event_lock = threading.RLock()
+
+
 class Event:
     """A marker that something has happened."""
 
     def __init__(self):
         self._value = False
-        self._waits: list[_Wait] = []
-        self._lock = threading.Lock()
+        self._waits = dict[_Wait, None]()
 
     def is_set(self):
         return self._value
 
     def set(self):
-        # This is a user-visible class, so they could be doing anything with it - in particular multiple threads may
-        # call `.set` simultaneously.
-        with self._lock:
+        with _global_event_lock:
             if not self._value:
-                new_waits = []
-                for wait in self._waits:
-                    wait.decrement()
-                    if wait.waiting_for is not None:
-                        new_waits.append(wait)
-                self._waits = new_waits  # i.e. delete all completed waits
-            self._value = True
+                for wait in self._waits.copy().keys():
+                    wait.notify_from_event()
+                self._value = True
+
+    def clear(self):
+        with _global_event_lock:
+            if self._value:
+                for wait in self._waits.keys():
+                    wait.unnotify_from_event()
+                self._value = False
 
     def wait(self) -> Coro[None]:
         # Lie about the return type, this is an implementation detail that should otherwise feel like a coroutine.
-        wait = _Wait(self)
-        self._waits.append(wait)
-        return wait  # pyright: ignore[reportReturnType]
+        return _Wait(self)  # pyright: ignore[reportReturnType]
 
     def __bool__(self):
         raise TypeError("Cannot convert `tinyio.Event` to boolean. Did you mean `event.is_set()`?")
 
 
-@dataclasses.dataclass(frozen=False)
+class _WaitState(enum.Enum):
+    INITIALISED = "initialised"
+    REGISTERED = "registered"
+    NOTIFIED_EVENT = "notified_event"
+    NOTIFIED_TIMEOUT = "notified_timeout"
+    DONE = "done"
+
+
 class _Wait:
-    event: Event
-    used: bool
-    waiting_for: "None | _WaitingFor"
-
     def __init__(self, event: Event):
-        self.event = event
-        self.used = False
-        self.waiting_for = None
+        self._event = event
+        self._waiting_for = None
+        self._state = _WaitState.INITIALISED
 
-    def decrement(self):
-        if self.waiting_for is not None:
-            self.waiting_for.decrement()
-            if self.waiting_for.counter == 0:
-                self.waiting_for = None
-
+    # This is basically just a second `__init__` method. We're not really initialised until this has been called
+    # precisely once as well. The reason we have two is that an end-user creates us during `Event.wait()`, and then we
+    # need to register on the event loop.
     def register(self, waiting_for: "_WaitingFor") -> None:
-        if self.used:
-            e = RuntimeError("Do not yield the same `event.wait()` multiple times. Make a new `.wait()` call instead.")
-            waiting_for.coro.throw(e)
-        self.used = True
-        # Here we need the lock in case `self.event.set()` is being called at the same time as this method. Importantly,
-        # this is the same lock as is used in `self.event.set()`.
-        with self.event._lock:
-            if self.event.is_set():
-                waiting_for.decrement()
-            else:
-                assert self.waiting_for is None
-                self.waiting_for = waiting_for
+        with _global_event_lock:
+            if self._state is not _WaitState.INITIALISED:
+                waiting_for.coro.throw(
+                    RuntimeError(
+                        "Do not yield the same `event.wait()` multiple times. Make a new `.wait()` call instead."
+                    )
+                )
+            self._state = _WaitState.REGISTERED
+            assert self._waiting_for is None
+            self._waiting_for = waiting_for
+            self._event._waits[self] = None
+            if self._event.is_set():
+                self.notify_from_event()
+
+    def notify_from_event(self):
+        with _global_event_lock:
+            assert self._state is _WaitState.REGISTERED
+            assert self._waiting_for is not None
+            self._state = _WaitState.NOTIFIED_EVENT
+            self._waiting_for.decrement()
+
+    def notify_from_timeout(self):
+        with _global_event_lock:
+            assert self._state is _WaitState.REGISTERED
+            assert self._waiting_for is not None
+            self._state = _WaitState.NOTIFIED_TIMEOUT
+            self._waiting_for.decrement()
+
+    def unnotify_from_event(self):
+        with _global_event_lock:
+            assert self._state in {_WaitState.NOTIFIED_EVENT, _WaitState.NOTIFIED_TIMEOUT}
+            assert self._waiting_for is not None
+            if self._state is _WaitState.NOTIFIED_EVENT:
+                self._waiting_for.increment()
+            # But ignore un-notifies if we've already triggered our timeout.
+
+    def cleanup(self):
+        with _global_event_lock:
+            assert self._state in {_WaitState.NOTIFIED_EVENT, _WaitState.NOTIFIED_TIMEOUT}
+            self._state = _WaitState.DONE
+            self._waiting_for = None
+            del self._event._waits[self]
 
 
 @dataclasses.dataclass(frozen=False)
@@ -104,34 +143,45 @@ class _WaitingFor:
     wake_loop: threading.Event
     results: weakref.WeakKeyDictionary[Coro, Any]
     queue: co.deque[_Todo]
-    lock: threading.Lock
 
     def __post_init__(self):
         assert self.counter > 0
 
+    def increment(self):
+        with _global_event_lock:
+            # This assert is valid as our only caller is `_Wait.unnotify_from_event`, which will only have a reference
+            # to us if we haven't completed yet -- otherwise we'd have already called its `_Wait.cleanup` method.
+            assert self.counter != 0
+            self.counter += 1
+
     def decrement(self):
         # We need a lock here as this may be called simultaneously between our event loop and via `Event.set`.
         # (Though `Event.set` has its only internal lock, that doesn't cover the event loop as well.)
-        with self.lock:
+        with _global_event_lock:
             assert self.counter > 0
             self.counter -= 1
-            schedule = self.counter == 0
-        if schedule:
-            match self.out:
-                case None:
-                    result = None
-                case _Wait():
-                    result = None
-                case Generator():
-                    result = self.results[self.out]
-                case list():
-                    result = [None if isinstance(out_i, _Wait) else self.results[out_i] for out_i in self.out]
-                case _:
-                    assert False
-            self.queue.appendleft(_Todo(self.coro, result))
-            # If we're callling this function from a thread, and the main event loop is blocked, then use this to notify
-            # the main event loop that it can wake up.
-            self.wake_loop.set()
+            if self.counter == 0:
+                match self.out:
+                    case None:
+                        result = None
+                        waits = []
+                    case _Wait():
+                        result = None
+                        waits = [self.out]
+                    case Generator():
+                        result = self.results[self.out]
+                        waits = []
+                    case list():
+                        result = [None if isinstance(out_i, _Wait) else self.results[out_i] for out_i in self.out]
+                        waits = [out_i for out_i in self.out if isinstance(out_i, _Wait)]
+                    case _:
+                        assert False
+                for wait in waits:
+                    wait.cleanup()
+                self.queue.appendleft(_Todo(self.coro, result))
+                # If we're callling this function from a thread, and the main event loop is blocked, then use this to
+                # notify the main event loop that it can wake up.
+                self.wake_loop.set()
 
 
 class Loop:
@@ -218,7 +268,11 @@ class Loop:
             coro.throw(RuntimeError("Cycle detected in `tinyio` loop. Cancelling all coroutines."))
 
     def _step(
-        self, todo: _Todo, queue: co.deque[_Todo], waiting_on: dict[Coro, list[_WaitingFor]], wake_loop: threading.Event
+        self,
+        todo: _Todo,
+        queue: co.deque[_Todo],
+        waiting_on: dict[Coro, list[_WaitingFor]],
+        wake_loop: threading.Event,
     ) -> None:
         try:
             out = todo.coro.send(todo.value)
@@ -256,9 +310,7 @@ class Loop:
                             todo.coro.throw(_invalid(original_out))
                     queue.appendleft(_Todo(todo.coro, None))
                 case list():
-                    waiting_for = _WaitingFor(
-                        len(out), todo.coro, original_out, wake_loop, self._results, queue, threading.Lock()
-                    )
+                    waiting_for = _WaitingFor(len(out), todo.coro, original_out, wake_loop, self._results, queue)
                     for out_i in out:
                         if isinstance(out_i, Generator):
                             if out_i in self._results.keys():
