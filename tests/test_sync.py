@@ -152,7 +152,7 @@ def test_event_run(is_set: bool):
 
 
 @pytest.mark.parametrize("is_set", (False, True))
-def test_event_double_wait(is_set: bool):
+def test_event_repeated_wait(is_set: bool):
     event = tinyio.Event()
     if is_set:
         event.set()
@@ -184,3 +184,103 @@ def test_event_simultaneous_wait(is_set: bool):
 
     loop = tinyio.Loop()
     loop.run(_foo())
+
+
+@pytest.mark.parametrize("is_set", (False, True))
+def test_event_simultaneous_repeated_wait(is_set: bool):
+    event = tinyio.Event()
+    if is_set:
+        event.set()
+
+    def foo():
+        wait = event.wait()
+        if not is_set:
+            t = threading.Timer(0.1, lambda: event.set())
+            t.start()
+        yield [wait, wait]
+
+    loop = tinyio.Loop()
+    with pytest.raises(RuntimeError, match=re.escape("Do not yield the same `event.wait()` multiple times")):
+        loop.run(foo())
+
+
+def test_event_clear_not_strict():
+    event = tinyio.Event()
+    event.set()
+    event.clear()
+    assert not event.is_set()
+
+    out = []
+
+    def foo():
+        yield event.wait()
+        out.append(2)
+
+    def bar():
+        yield
+        out.append(1)
+        event.set()
+        yield
+        # Even though we `clear()` the event again afterwards, both `foo()` still unblock.
+        event.clear()
+        out.append(3)
+
+    def baz():
+        yield [foo(), foo(), bar()]
+
+    loop = tinyio.Loop()
+    loop.run(baz())
+    assert out == [1, 2, 2, 3]
+
+
+class _Semaphore:
+    def __init__(self, value):
+        self.value = value
+        self.event = tinyio.Event()
+        self.event.set()
+
+    def __call__(self):
+        while True:
+            yield self.event.wait()
+            if self.event.is_set():
+                break
+        assert self.value > 0
+        self.value -= 1
+        if self.value == 0:
+            self.event.clear()
+        return _closing(self)
+
+
+@contextlib.contextmanager
+def _closing(semaphore):
+    try:
+        yield
+    finally:
+        semaphore.value += 1
+        semaphore.event.set()
+
+
+def test_alternate_semaphore():
+    """This test is useful as it makes use of `Event.clear()`."""
+
+    counter = 0
+
+    def _count(semaphore, i):
+        nonlocal counter
+        with (yield semaphore()):
+            counter += 1
+            if counter > 2:
+                raise RuntimeError
+            yield
+            counter -= 1
+        return i
+
+    def _run(value):
+        semaphore = _Semaphore(value)
+        out = yield [_count(semaphore, i) for i in range(50)]
+        return out
+
+    loop = tinyio.Loop()
+    assert loop.run(_run(2)) == list(range(50))
+    with pytest.raises(RuntimeError):
+        loop.run(_run(3))

@@ -137,7 +137,13 @@ tinyio.Lock
 
 - `tinyio.Event()`
 
-    This has a method `.wait()`, which is a coroutine you can `yield` on. This will unblock once its `.set()` method is called (typically from another coroutine). It also has a `is_set()` method for checking whether it has been set.
+    This is a wrapper around a boolean flag, initialised with `False`.
+    This has the following methods:
+    
+    - `.is_set()`: check the value of the flag.
+    - `.set()`: set the flag to `True`.
+    - `.clear()`: set the flag to `False`.
+    - `.wait()`, which is a coroutine you can `yield` on. This will unblock if the internal flag is `True`. (Typically this is accomplished by calling `.set()` from another coroutine or from a thread.)
 
 ---
 
