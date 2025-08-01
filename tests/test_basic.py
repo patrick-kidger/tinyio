@@ -28,6 +28,15 @@ def test_gather():
     assert loop.run(_gather(3)) == [4, 5]
 
 
+def test_empty_gather():
+    def _gather():
+        out = yield []
+        return out
+
+    loop = tinyio.Loop()
+    assert loop.run(_gather()) == []
+
+
 def test_multi_yield():
     def _multi_yield():
         foo = _add_one(x=3)
@@ -192,6 +201,15 @@ def test_background_already_waiting(wait_on_f: bool):
     loop = tinyio.Loop()
     loop.run(i())
     assert done
+
+
+def test_empty_background():
+    def _background():
+        yield set()
+        return 3
+
+    loop = tinyio.Loop()
+    assert loop.run(_background()) == 3
 
 
 def test_background_multiple_yields():

@@ -92,6 +92,9 @@ class _WaitingFor:
     queue: co.deque[_Todo]
     lock: threading.Lock
 
+    def __post_init__(self):
+        assert self.counter > 0
+
     def decrement(self):
         # We need a lock here as this may be called simultaneously between our event loop and via `Event.set`.
         # (Though `Event.set` has its only internal lock, that doesn't cover the event loop as well.)
@@ -211,11 +214,14 @@ class Loop:
                 waiting_for.decrement()
         else:
             original_out = out
+            if type(out) is list and len(out) == 0:
+                out = None
             if isinstance(out, (_Wait, Generator)):
                 out = [out]
             match out:
                 case None:
-                    queue.appendleft(_Todo(todo.coro, None))
+                    # original_out will either be `None` or `[]`.
+                    queue.appendleft(_Todo(todo.coro, original_out))
                 case set():
                     for out_i in out:
                         if isinstance(out_i, Generator):
