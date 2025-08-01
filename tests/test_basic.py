@@ -1,3 +1,4 @@
+import gc
 import time
 
 import pytest
@@ -255,3 +256,23 @@ def test_no_yield_indirect():
 
     loop = tinyio.Loop()
     assert loop.run(g()) == 3
+
+
+def test_gc():
+    def _block_add_one(x):
+        return x + 1
+
+    def _foo(x):
+        return (yield tinyio.run_in_thread(_block_add_one, x))
+
+    def _gc(x: int) -> tinyio.Coro[tuple[int, int]]:
+        iterator = tinyio.AsCompleted({_foo(x), _add_one(x)})
+        y = yield iterator.get()
+        z = yield iterator.get()
+        return y, z
+
+    loop = tinyio.Loop()
+    coro = _gc(4)
+    assert loop.run(coro) == (5, 5)
+    gc.collect()
+    assert set(loop._results.keys()) == {coro}
