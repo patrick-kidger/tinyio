@@ -35,7 +35,7 @@ class Event:
 
     def __init__(self):
         self._value = False
-        self._waiting_fors = dict[Coro, _WaitingFor]()
+        self._waits: list[_Wait] = []
         self._lock = threading.Lock()
 
     def is_set(self):
@@ -46,31 +46,19 @@ class Event:
         # call `.set` simultaneously.
         with self._lock:
             if not self._value:
-                to_delete = []
-                for coro, waiting_for in self._waiting_fors.items():
-                    waiting_for.decrement()
-                    if waiting_for.counter == 0:
-                        to_delete.append(coro)
-                # Deleting them here isn't necessary for logical correctness, but is done just to allow things to be
-                # GC'd. As an `Event` is user-supplied then it could have anything holding references to it, so this is
-                # the appropriate point to allow our internals to be GC'd as soon as possible.
-                for coro in to_delete:
-                    del self._waiting_fors[coro]
+                new_waits = []
+                for wait in self._waits:
+                    wait.decrement()
+                    if wait.waiting_for is not None:
+                        new_waits.append(wait)
+                self._waits = new_waits  # i.e. delete all completed waits
             self._value = True
 
     def wait(self) -> Coro[None]:
         # Lie about the return type, this is an implementation detail that should otherwise feel like a coroutine.
-        return _Wait(self, used=False)  # pyright: ignore[reportReturnType]
-
-    def _register(self, waiting_for: "_WaitingFor") -> None:
-        # Here we need the lock in case `self.set()` is being called at the same time as this method. Importantly, this
-        # is the same lock as is used in `self.set()`.
-        with self._lock:
-            if self._value:
-                waiting_for.decrement()
-            else:
-                assert waiting_for.coro not in self._waiting_fors.keys()
-                self._waiting_fors[waiting_for.coro] = waiting_for
+        wait = _Wait(self)
+        self._waits.append(wait)
+        return wait  # pyright: ignore[reportReturnType]
 
     def __bool__(self):
         raise TypeError("Cannot convert `tinyio.Event` to boolean. Did you mean `event.is_set()`?")
@@ -80,6 +68,32 @@ class Event:
 class _Wait:
     event: Event
     used: bool
+    waiting_for: "None | _WaitingFor"
+
+    def __init__(self, event: Event):
+        self.event = event
+        self.used = False
+        self.waiting_for = None
+
+    def decrement(self):
+        if self.waiting_for is not None:
+            self.waiting_for.decrement()
+            if self.waiting_for.counter == 0:
+                self.waiting_for = None
+
+    def register(self, waiting_for: "_WaitingFor") -> None:
+        if self.used:
+            e = RuntimeError("Do not yield the same `event.wait()` multiple times. Make a new `.wait()` call instead.")
+            waiting_for.coro.throw(e)
+        self.used = True
+        # Here we need the lock in case `self.event.set()` is being called at the same time as this method. Importantly,
+        # this is the same lock as is used in `self.event.set()`.
+        with self.event._lock:
+            if self.event.is_set():
+                waiting_for.decrement()
+            else:
+                assert self.waiting_for is None
+                self.waiting_for = waiting_for
 
 
 @dataclasses.dataclass(frozen=False)
@@ -245,7 +259,6 @@ class Loop:
                     waiting_for = _WaitingFor(
                         len(out), todo.coro, original_out, wake_loop, self._results, queue, threading.Lock()
                     )
-                    seen_events = set()
                     for out_i in out:
                         if isinstance(out_i, Generator):
                             if out_i in self._results.keys():
@@ -256,21 +269,7 @@ class Loop:
                                 queue.appendleft(_Todo(out_i, None))
                                 waiting_on[out_i] = [waiting_for]
                         elif isinstance(out_i, _Wait):
-                            if out_i.used:
-                                # I don't think there's any actual harm in this, but it's a weird thing to do. We
-                                # reserve the right for this to mean something more precise in the future.
-                                todo.coro.throw(
-                                    RuntimeError(
-                                        "Do not yield the same `event.wait()` multiple times. Make a new `.wait()` "
-                                        "call instead."
-                                    )
-                                )
-                            out_i.used = True
-                            if out_i.event in seen_events:
-                                waiting_for.decrement()
-                            else:
-                                out_i.event._register(waiting_for)
-                            seen_events.add(out_i.event)
+                            out_i.register(waiting_for)
                         else:
                             todo.coro.throw(_invalid(original_out))
                 case _:
