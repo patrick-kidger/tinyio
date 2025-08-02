@@ -30,7 +30,7 @@ class Semaphore:
         if self._value == 0:
             event = Event()
             self._events.append(event)
-            yield event.wait()
+            yield from event.wait()
         assert self._value > 0
         self._value -= 1
         return _CloseSemaphore(self, [False])
@@ -77,5 +77,5 @@ class Barrier:
         self._count += 1
         if self._count == self._value:
             self._event.set()
-        yield self._event.wait()
+        yield from self._event.wait()
         return count
