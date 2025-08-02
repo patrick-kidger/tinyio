@@ -115,25 +115,33 @@ class _Wait:
 
     def notify_from_event(self):
         with _global_event_lock:
-            assert self.state is _WaitState.REGISTERED
+            # We cannot have `NOTIFIED_EVENT` as our event will have toggled its internal state to `True` as part of
+            # calling us, and so future `Event.set()` calls will not call `.notify_from_event`.
+            # We cannot have `DONE` as this is only set during `.cleanup()`, and at that point we deregister from
+            # `self._event._waits`.
+            assert self.state in {_WaitState.REGISTERED, _WaitState.NOTIFIED_TIMEOUT}
             assert self._waiting_for is not None
-            self.state = _WaitState.NOTIFIED_EVENT
-            self._waiting_for.decrement()
+            if self.state == _WaitState.REGISTERED:
+                self.state = _WaitState.NOTIFIED_EVENT
+                self._waiting_for.decrement()
 
     def notify_from_timeout(self):
         with _global_event_lock:
-            assert self.state is _WaitState.REGISTERED
+            assert self.state in {_WaitState.REGISTERED, _WaitState.NOTIFIED_EVENT}
             assert self._waiting_for is not None
-            self.state = _WaitState.NOTIFIED_TIMEOUT
-            self._waiting_for.decrement()
+            is_registered = self.state == _WaitState.REGISTERED
+            self.state = _WaitState.NOTIFIED_TIMEOUT  # Override `NOTIFIED_EVENT` in case we `unnotify_from_event` later
+            if is_registered:
+                self._waiting_for.decrement()
 
     def unnotify_from_event(self):
         with _global_event_lock:
             assert self.state in {_WaitState.NOTIFIED_EVENT, _WaitState.NOTIFIED_TIMEOUT}
             assert self._waiting_for is not None
-            if self.state is _WaitState.NOTIFIED_EVENT:
-                self._waiting_for.increment()
             # But ignore un-notifies if we've already triggered our timeout.
+            if self.state is _WaitState.NOTIFIED_EVENT:
+                self.state = _WaitState.REGISTERED
+                self._waiting_for.increment()
 
     def cleanup(self):
         with _global_event_lock:
@@ -145,6 +153,7 @@ class _Wait:
             del self._event._waits[self]
             self._event = None  # For GC purposes.
 
+    # For `heapq` to work.
     def __lt__(self, other):
         return self.timeout_in_seconds < other.timeout_in_seconds
 
@@ -260,8 +269,15 @@ class Loop:
                         self._check_cycle(waiting_on, coro)
                         # ...but hopefully we're just waiting on a thread or exogeneous event to unblock one of our
                         # coroutines.
-                        self._wait(wait_heap, wake_loop)
-                self._clear(wait_heap, wake_loop)
+                        while len(queue) == 0:
+                            self._wait(wait_heap, wake_loop)
+                            self._clear(wait_heap, wake_loop)
+                            # This whole block needs to be wrapped in a `len(queue)` check, as just because we've
+                            # unblocked doesn't necessarily mean that we're ready to schedule a coroutine: we could have
+                            # something like `yield [event1.wait(...), event2.wait(...)]`, and only one of the two has
+                            # unblocked.
+                else:
+                    self._clear(wait_heap, wake_loop)
                 todo = queue.pop()
                 current_coro_ref[0] = todo.coro
                 self._step(todo, queue, waiting_on, wait_heap, wake_loop)
@@ -296,13 +312,12 @@ class Loop:
 
     def _clear(self, wait_heap: list[_Wait], wake_loop: threading.Event):
         wake_loop.clear()
-        now = time.monotonic()
         while len(wait_heap) > 0:
             soonest = wait_heap[0]
             assert soonest.timeout_in_seconds is not None
             if soonest.state == _WaitState.DONE:
                 heapq.heappop(wait_heap)
-            elif soonest.timeout_in_seconds < now:
+            elif soonest.timeout_in_seconds <= time.monotonic():
                 heapq.heappop(wait_heap)
                 soonest.notify_from_timeout()
             else:
