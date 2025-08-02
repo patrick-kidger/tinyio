@@ -10,7 +10,7 @@ import types
 import warnings
 import weakref
 from collections.abc import Generator
-from typing import Any, TypeAlias, TypeVar, cast
+from typing import Any, TypeAlias, TypeVar
 
 
 #
@@ -60,12 +60,6 @@ class Loop:
 
         The final `return` from `coro`.
         """
-        if isinstance(coro, _Wait):
-
-            def gen(coro=coro):
-                yield coro
-
-            coro = cast(Coro, gen())
         if not isinstance(coro, Generator):
             raise ValueError("Invalid input `coro`, which is not a coroutine (a function using `yield` statements).")
         queue: co.deque[_Todo] = co.deque()
@@ -176,17 +170,8 @@ class Loop:
                             if out_i not in self._results.keys() and out_i not in waiting_on.keys():
                                 queue.appendleft(_Todo(out_i, None))
                                 waiting_on[out_i] = []
-                        elif isinstance(out_i, _Wait):
-                            # Scheduling an `event.wait()` in the background corresponds to doing nothing.
-                            # We could also just replace this with error with a `pass`, as doing this is harmless.
-                            # We make it an error just because that's probably better UX? Seems like a mistake.
-                            todo.coro.throw(
-                                RuntimeError(
-                                    "Do not `yield {event.wait(), ...}`, it is meangless to both wait on an event and "
-                                    "schedule it in the background."
-                                )
-                            )
                         else:
+                            assert not isinstance(out_i, _Wait)
                             todo.coro.throw(_invalid(original_out))
                     queue.appendleft(_Todo(todo.coro, None))
                 case list():
@@ -395,8 +380,7 @@ class Event:
                 self._value = False
 
     def wait(self, timeout_in_seconds: None | int | float = None) -> Coro[None]:
-        # Lie about the return type, this is an implementation detail that should otherwise feel like a coroutine.
-        return _Wait(self, timeout_in_seconds)  # pyright: ignore[reportReturnType]
+        yield _Wait(self, timeout_in_seconds)
 
     def __bool__(self):
         raise TypeError("Cannot convert `tinyio.Event` to boolean. Did you mean `event.is_set()`?")

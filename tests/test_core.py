@@ -430,8 +430,6 @@ def test_timeout_as_part_of_group_and_only_coroutine():
         return 3
 
     def set2():
-        while wait.state != tinyio._core._WaitState.NOTIFIED_TIMEOUT:
-            pass
         time.sleep(0.1)
         event2.set()
 

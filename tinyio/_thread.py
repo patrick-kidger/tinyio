@@ -56,7 +56,7 @@ def run_in_thread(fn: Callable[_Params, _Return], /, *args: _Params.args, **kwar
 
     try:
         t.start()
-        yield event.wait()
+        yield from event.wait()
     except BaseException as e:
         # We can end up here if an `tinyio.CancelledError` arises out of the `yield`, or from an exogeneous
         # `KeyboardInterrupt`.

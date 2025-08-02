@@ -1,5 +1,4 @@
 import contextlib
-import re
 import threading
 import time
 
@@ -152,25 +151,6 @@ def test_event_run(is_set: bool):
 
 
 @pytest.mark.parametrize("is_set", (False, True))
-def test_event_repeated_wait(is_set: bool):
-    event = tinyio.Event()
-    if is_set:
-        event.set()
-
-    def foo():
-        wait = event.wait()
-        if not is_set:
-            t = threading.Timer(0.1, lambda: event.set())
-            t.start()
-        yield wait
-        yield wait
-
-    loop = tinyio.Loop()
-    with pytest.raises(RuntimeError, match=re.escape("Do not yield the same `event.wait()` multiple times")):
-        loop.run(foo())
-
-
-@pytest.mark.parametrize("is_set", (False, True))
 def test_event_simultaneous_wait(is_set: bool):
     event = tinyio.Event()
     if is_set:
@@ -186,25 +166,8 @@ def test_event_simultaneous_wait(is_set: bool):
     loop.run(_foo())
 
 
-@pytest.mark.parametrize("is_set", (False, True))
-def test_event_simultaneous_repeated_wait(is_set: bool):
-    event = tinyio.Event()
-    if is_set:
-        event.set()
-
-    def foo():
-        wait = event.wait()
-        if not is_set:
-            t = threading.Timer(0.1, lambda: event.set())
-            t.start()
-        yield [wait, wait]
-
-    loop = tinyio.Loop()
-    with pytest.raises(RuntimeError, match=re.escape("Do not yield the same `event.wait()` multiple times")):
-        loop.run(foo())
-
-
 def test_event_clear_not_strict():
+    """Test that even though we `clear()` the event after setting it, that both `foo()` still unblock."""
     event = tinyio.Event()
     event.set()
     event.clear()
@@ -220,8 +183,8 @@ def test_event_clear_not_strict():
         yield
         out.append(1)
         event.set()
-        yield
-        # Even though we `clear()` the event again afterwards, both `foo()` still unblock.
+        for _ in range(20):
+            yield
         event.clear()
         out.append(3)
 

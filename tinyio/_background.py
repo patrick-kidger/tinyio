@@ -124,5 +124,5 @@ class AsCompleted(Generic[_T]):
 
             yield {add_done_callback(coro, callback) for coro in self._coros}
             self._coros.clear()  # Enable them to be GC'd as they complete.
-        yield self._events[get_count].wait()
+        yield from self._events[get_count].wait()
         return self._outs.pop(get_count)

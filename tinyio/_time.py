@@ -19,7 +19,7 @@ def sleep(delay_in_seconds: int | float) -> Coro[None]:
 
     A coroutine that just sleeps.
     """
-    yield Event().wait(delay_in_seconds)
+    yield from Event().wait(delay_in_seconds)
 
 
 class TimeoutError(BaseException):
@@ -50,7 +50,7 @@ def timeout(coro: Coro[_T], timeout_in_seconds: int | float) -> Coro[tuple[None 
         done.set()
 
     yield {add_done_callback(coro, callback)}
-    yield done.wait(timeout_in_seconds)
+    yield from done.wait(timeout_in_seconds)
     if len(outs) == 0:
         with contextlib.suppress(TimeoutError):
             coro.throw(TimeoutError)
