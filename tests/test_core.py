@@ -1,3 +1,4 @@
+import contextlib
 import gc
 import threading
 import time
@@ -437,3 +438,20 @@ def test_timeout_as_part_of_group_and_only_coroutine():
     t.start()
     loop = tinyio.Loop()
     assert loop.run(f()) == 3
+
+
+def test_yield_finished_coroutine():
+    def f():
+        yield
+
+    ff = f()
+    next(ff)
+    with contextlib.suppress(StopIteration):
+        next(ff)
+
+    def g():
+        yield ff
+
+    loop = tinyio.Loop()
+    with pytest.raises(RuntimeError, match="has already finished"):
+        loop.run(g())

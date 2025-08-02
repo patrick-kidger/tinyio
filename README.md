@@ -207,13 +207,6 @@ You can distinguish it from a normal Python function by putting `if False: yield
 </details>
 
 <details>
-<summary>Any funny business to know around loops?</summary>
-<br>
-
-The output of each coroutine is stored on the `Loop()` class. If you attempt to run a previously-ran coroutine in a new `Loop()` then they will be treated as just returning `None`, which is probably not what you want.
-</details>
-
-<details>
 <summary>vs <code>asyncio</code> or <code>trio</code>?.</summary>
 <br>
 
