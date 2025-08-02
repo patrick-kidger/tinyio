@@ -192,8 +192,8 @@ def test_error_to_thread(exception_group):
             assert type(catcher.value) is BaseExceptionGroup
             [raising, cancelled] = catcher.value.exceptions
             assert type(raising) is RuntimeError and str(raising) == "Raising!"
-            assert type(cancelled) is tinyio.CancelledError
             assert _flat_tb(raising) == [workflow.__name__, "cancel", "cancel2"]
+            assert type(cancelled) is tinyio.CancelledError
             assert _flat_tb(cancelled) == ["target", "blocking_operation"]
         else:
             raising = catcher.value
@@ -243,10 +243,10 @@ def test_error_to_thread_with_context(exception_group):
         assert type(value) is ValueError
         assert str(value) == "Responding improperly to cancellation"
         assert _flat_tb(value) == ["target", "blocking_operation"]
-        cancelled = value.__context__
-        assert cancelled is value.__cause__
-        assert type(cancelled) is tinyio.CancelledError
-        assert _flat_tb(cancelled) == ["blocking_operation", "sub_blocking_operation"]
+        cancelled_context = value.__context__
+        assert cancelled_context is value.__cause__
+        assert type(cancelled_context) is tinyio.CancelledError
+        assert _flat_tb(cancelled_context) == ["blocking_operation", "sub_blocking_operation"]
 
 
 @pytest.mark.parametrize("exception_group", (None, False, True))
@@ -264,7 +264,8 @@ def test_error_from_thread(exception_group):
         yield [baz(), tinyio.run_in_thread(blocking_operation)]
 
     def baz():
-        yield
+        while True:
+            yield
 
     loop = tinyio.Loop()
     with pytest.raises(BaseException) as catcher:
@@ -309,7 +310,8 @@ def test_error_from_thread_with_context(exception_group):
         yield [baz(), tinyio.run_in_thread(blocking_operation)]
 
     def baz():
-        yield
+        while True:
+            yield
 
     loop = tinyio.Loop()
     with pytest.raises(BaseException) as catcher:

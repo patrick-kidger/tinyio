@@ -1,5 +1,5 @@
 <h1 align="center">tinyio</h1>
-<h2 align="center">A tiny (~200 lines) event loop for Python</h2>
+<h2 align="center">A tiny (~300 lines) event loop for Python</h2>
 
 _Ever used `asyncio` and wished you hadn't?_
 
@@ -93,7 +93,7 @@ This gives every coroutine a chance to shut down gracefully. Debuggers like [`pa
 
 ### Batteries-included
 
-We ship batteries-included with a collection of standard operations, all built on top of just the functionality you've already seen.
+We ship batteries-included with the usual collection of standard operations.
 
 <details><summary>Click to expand</summary>
 
@@ -104,7 +104,6 @@ tinyio.Barrier                  tinyio.timeout
 tinyio.Event                    tinyio.TimeoutError
 tinyio.Lock
 ```
-None of these require special support from the event loop, they are all just simple implementations that you could have written yourself :)
 
 ---
 
@@ -138,7 +137,13 @@ None of these require special support from the event loop, they are all just sim
 
 - `tinyio.Event()`
 
-    This has a method `.wait()`, which is a coroutine you can `yield` on. This will unblock once its `.set()` method is called (typically from another coroutine). It also has a `is_set()` method for checking whether it has been set.
+    This is a wrapper around a boolean flag, initialised with `False`.
+    This has the following methods:
+    
+    - `.is_set()`: check the value of the flag.
+    - `.set()`: set the flag to `True`.
+    - `.clear()`: set the flag to `False`.
+    - `.wait()`, which is a coroutine you can `yield` on. This will unblock if the internal flag is `True`. (Typically this is accomplished by calling `.set()` from another coroutine or from a thread.)
 
 ---
 
@@ -166,7 +171,7 @@ None of these require special support from the event loop, they are all just sim
 
 - `tinyio.timeout(coro, timeout_in_seconds)`
 
-    This is a coroutine you can `yield` on, used  as `output, success = yield tinyio.timeout(coro, timeout_in_seconds)`.
+    This is a coroutine you can `yield` on, used as `output, success = yield tinyio.timeout(coro, timeout_in_seconds)`.
     
     This runs `coro` for at most `timeout_in_seconds`. If it succeeds in that time then the pair `(output, True)` is returned . Else this will return `(None, False)`, and `coro` will be halted by raising `tinyio.TimeoutError` inside it.
 
@@ -214,5 +219,15 @@ The output of each coroutine is stored on the `Loop()` class. If you attempt to 
 
 I wasted a *lot* of time trying to get correct error propagation with `asyncio`, trying to reason whether my tasks would be cleaned up correctly or not (edge-triggered vs level-triggered etc etc). `trio` is excellent but still has a one-loop-per-thread rule, and doesn't propagate cancellations to/from threads. These points inspired me to try writing my own.
 
-Nonetheless you'll definitely still want one of the above if you need anything fancy. If you don't, and you really really want simple error semantics, then maybe `tinyio` is for you instead. (In particular `trio` will be a better choice if you still need the event loop when cleaning up from errors; in contrast `tinyio` does not allow scheduling work back on the event loop at that time.)
+`tinyio` has the following unique features, and as such may be the right choice if any of these are must-haves for you:
+
+- the propagation of errors to/from threads;
+- no one-loop-per-thread rule;
+- simple error semantics (crash the whole loop if anything goes wrong);
+- tiny, hackable, codebase.
+
+However conversely, `tinyio` does not offer the ability to schedule work on the event loop whilst cleaning up from errors.
+
+If none of the bullet points are must-haves for you, or if needing the event loop during cleanup is a dealbreaker, then either `trio` or `asyncio` are likely to be better choices. :)
+
 </details>

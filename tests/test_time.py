@@ -1,4 +1,25 @@
+import time
+
 import tinyio
+
+
+def test_sleep():
+    outs = []
+
+    def f():
+        start = time.monotonic()
+        yield [tinyio.sleep(0.05), tinyio.sleep(0.1)]
+        actual_duration = time.monotonic() - start
+        # Note that these are pretty inaccurate tolerances! This is about what we get with `asyncio` too.
+        # The reason for this seems to be the accuracy in the `threading.Event.wait()` that we bottom out in. If we need
+        # greater resolution than this then we could do that by using a busy-loop for the last 1e-2 seconds.
+        success = 0.09 < actual_duration < 0.11
+        outs.append(success)
+
+    loop = tinyio.Loop()
+    for _ in range(5):
+        loop.run(f())
+    assert sum(outs) >= 4  # We allow one failure, to decrease flakiness.
 
 
 def _sleep(x):

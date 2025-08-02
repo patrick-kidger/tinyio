@@ -26,14 +26,15 @@ def test_in_thread():
 @pytest.mark.parametrize("with_map", (False, True))
 def test_thread_pool(with_map: bool):
     counter = 0
+    invalid_counter = False
     lock = threading.Lock()
 
     def _count(x, y):
-        nonlocal counter
+        nonlocal counter, invalid_counter
         with lock:
             counter += 1
         time.sleep(0.01)
-        assert counter <= 2
+        invalid_counter = invalid_counter | (counter > 2)
         with lock:
             counter -= 1
         return x, y
@@ -48,7 +49,24 @@ def test_thread_pool(with_map: bool):
 
     loop = tinyio.Loop()
     assert loop.run(_run(2)) == [(i, i) for i in range(50)]
+    assert not invalid_counter
+    loop.run(_run(3))
+    assert invalid_counter
+
+
+def test_simultaneous_errors():
+    def _raises():
+        raise RuntimeError
+
+    def _run():
+        out = yield [tinyio.run_in_thread(_raises) for _ in range(10)]
+        return out
+
+    loop = tinyio.Loop()
     with warnings.catch_warnings():
-        warnings.simplefilter("ignore", RuntimeWarning)
-        with pytest.raises(BaseExceptionGroup):
-            loop.run(_run(3))
+        warnings.simplefilter("error")
+        with pytest.raises(BaseExceptionGroup) as catcher:
+            loop.run(_run())
+    assert len(catcher.value.exceptions) > 1
+    for e in catcher.value.exceptions:
+        assert type(e) is RuntimeError

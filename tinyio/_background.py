@@ -1,8 +1,7 @@
-import collections as co
-from collections.abc import Callable
+from collections.abc import Callable, Generator
 from typing import Generic, TypeVar
 
-from ._core import Coro
+from ._core import Coro, Event
 
 
 _T = TypeVar("_T")
@@ -88,23 +87,42 @@ class AsCompleted(Generic[_T]):
     """
 
     def __init__(self, coros: set[Coro[_T]]):
+        if not isinstance(coros, set) or any(not isinstance(coro, Generator) for coro in coros):
+            raise ValueError("`AsCompleted(coros=...)` must be a set of coroutines.")
         self._coros = set(coros)
-        self._count = 0
-        self._queue = co.deque()
+        self._put_count = 0
+        self._get_count = 0
+        self._outs = {}
+        self._events = [Event() for _ in self._coros]
         self._started = False
 
     def done(self) -> bool:
-        """Whether all coroutines have completed."""
-
-        return self._count == len(self._coros)
+        """Whether all coroutines are being waited on. This does not imply that all coroutines have necessarily
+        finished executing; it just implies that you should not call `.get()` any more times.
+        """
+        return self._get_count == len(self._events)
 
     def get(self) -> Coro[_T]:
-        """Yields the output of the most next coroutine to complete."""
+        """Yields the output of the next coroutine to complete."""
+        get_count = self._get_count
+        if self._get_count >= len(self._events):
+            raise RuntimeError(
+                f"Called `AsCompleted.get` {self._get_count + 1} times, which is greater than the number of coroutines "
+                f"which are being waited on ({len(self._events)})."
+            )
+        self._get_count += 1
+        return self._get(get_count)
 
+    def _get(self, get_count: int):
         if not self._started:
             self._started = True
-            yield {add_done_callback(coro, self._queue.append) for coro in self._coros}
-        while len(self._queue) == 0:
-            yield
-        self._count += 1
-        return self._queue.popleft()
+
+            def callback(out):
+                self._outs[self._put_count] = out
+                self._events[self._put_count].set()
+                self._put_count += 1
+
+            yield {add_done_callback(coro, callback) for coro in self._coros}
+            self._coros.clear()  # Enable them to be GC'd as they complete.
+        yield self._events[get_count].wait()
+        return self._outs.pop(get_count)

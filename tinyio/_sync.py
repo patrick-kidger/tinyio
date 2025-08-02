@@ -1,6 +1,7 @@
+import collections as co
 import contextlib
 
-from ._core import Coro
+from ._core import Coro, Event
 
 
 class Semaphore:
@@ -23,24 +24,34 @@ class Semaphore:
         if value <= 0:
             raise ValueError("`tinyio.Semaphore(value=...)` must be positive.")
         self._value = value
+        self._events = co.deque[Event]()
 
     def __call__(self) -> Coro[contextlib.AbstractContextManager[None]]:
-        while self._value <= 0:
-            assert self._value >= 0
-            yield
+        if self._value == 0:
+            event = Event()
+            self._events.append(event)
+            yield event.wait()
+        assert self._value > 0
         self._value -= 1
-        return _close_semaphore(self, [False])
+        return _CloseSemaphore(self, [False])
 
 
-@contextlib.contextmanager
-def _close_semaphore(semaphore: Semaphore, cell: list[bool]):
-    if cell[0]:
-        raise RuntimeError("Use a new `semaphore()` call in each `with (yield semaphore())`, do not re-use it.")
-    cell[0] = True
-    try:
-        yield
-    finally:
-        semaphore._value += 1
+class _CloseSemaphore:
+    def __init__(self, semaphore: Semaphore, cell: list[bool]):
+        self._semaphore = semaphore
+        self._cell = cell
+
+    def __enter__(self):
+        if self._cell[0]:
+            raise RuntimeError("Use a new `semaphore()` call in each `with (yield semaphore())`, do not re-use it.")
+        self._cell[0] = True
+
+    def __exit__(self, exc_type, exc_value, exc_tb):
+        del exc_type, exc_value, exc_tb
+        self._semaphore._value += 1
+        if len(self._semaphore._events) > 0:
+            event = self._semaphore._events.popleft()
+            event.set()
 
 
 class Lock:
@@ -59,27 +70,12 @@ class Barrier:
     def __init__(self, value: int):
         self._count = 0
         self._value = value
+        self._event = Event()
 
     def wait(self):
         count = self._count
         self._count += 1
-        while self._count < self._value:
-            yield
+        if self._count == self._value:
+            self._event.set()
+        yield self._event.wait()
         return count
-
-
-class Event:
-    """A marker than something has happened."""
-
-    def __init__(self):
-        self._set = False
-
-    def is_set(self):
-        return self._set
-
-    def set(self):
-        self._set = True
-
-    def wait(self):
-        while not self._set:
-            yield

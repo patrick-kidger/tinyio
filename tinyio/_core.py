@@ -1,15 +1,26 @@
 import collections as co
 import dataclasses
+import enum
+import graphlib
+import heapq
+import threading
+import time
 import traceback
 import types
 import warnings
 import weakref
 from collections.abc import Generator
-from typing import Any, TypeAlias, TypeVar
+from typing import Any, TypeAlias, TypeVar, cast
 
 
 #
-# Loop implementation
+# Public API: loop implementation
+#
+# The main logic is that each time coroutine yields, we create a `_WaitingFor` object which holds a counter for how many
+# things it is waiting on before it can wake up. Once this counter hits zero, the `_WaitingFor` object schedules the
+# coroutine back on the loop.
+# Counters can be decremented in three ways: another coroutine finishes, an `Event.set()` is triggered, or a timeout in
+# `Event.wait(timeout=...)` is triggered.
 #
 
 
@@ -49,113 +60,166 @@ class Loop:
 
         The final `return` from `coro`.
         """
+        if isinstance(coro, _Wait):
+
+            def gen(coro=coro):
+                yield coro
+
+            coro = cast(Coro, gen())
+        if not isinstance(coro, Generator):
+            raise ValueError("Invalid input `coro`, which is not a coroutine (a function using `yield` statements).")
         queue: co.deque[_Todo] = co.deque()
-        waiting_on: dict[Coro, list[Coro]] = {}
-        waiting_for: dict[Coro, _WaitingFor] = {}
         queue.appendleft(_Todo(coro, None))
+        waiting_on = dict[Coro, list[_WaitingFor]]()
         waiting_on[coro] = []
-        # Loop invariant: always holds a single element. It's not really load-bearing, it's just used for making a nice
+        wait_heap: list[_Wait] = []
+        # Loop invariant: `{x.coro for x in queue}.issubset(set(waiting_on.keys()))`
+        wake_loop = threading.Event()
+        wake_loop.set()
+        # Loop invariant: `len(current_coro_ref) == 1`. It's not really load-bearing, it's just used for making a nice
         # traceback when we get an error.
         current_coro_ref = [coro]
         try:
-            while len(queue) > 0:
+            while True:
+                if len(queue) == 0:
+                    if len(waiting_on) == 0:
+                        # We're done.
+                        break
+                    else:
+                        # We might have a cycle bug...
+                        self._check_cycle(waiting_on, coro)
+                        # ...but hopefully we're just waiting on a thread or exogeneous event to unblock one of our
+                        # coroutines.
+                        while len(queue) == 0:
+                            self._wait(wait_heap, wake_loop)
+                            self._clear(wait_heap, wake_loop)
+                            # This whole block needs to be wrapped in a `len(queue)` check, as just because we've
+                            # unblocked doesn't necessarily mean that we're ready to schedule a coroutine: we could have
+                            # something like `yield [event1.wait(...), event2.wait(...)]`, and only one of the two has
+                            # unblocked.
+                else:
+                    self._clear(wait_heap, wake_loop)
                 todo = queue.pop()
                 current_coro_ref[0] = todo.coro
-                self._step(todo, queue, waiting_on, waiting_for)
+                self._step(todo, queue, waiting_on, wait_heap, wake_loop)
             current_coro_ref[0] = coro
-            self._check_cycle(waiting_on, coro)
         except BaseException as e:
             _cleanup(e, waiting_on, current_coro_ref, exception_group)
             raise  # if not raising an `exception_group`
         return self._results[coro]
 
-    def _check_cycle(self, waiting_on, coro):
-        del self
-        if len(waiting_on) != 0:
-            import graphlib
+    @staticmethod
+    def _check_cycle(waiting_on, coro):
+        sorter = graphlib.TopologicalSorter()
+        for k, v in waiting_on.items():
+            for vi in v:
+                sorter.add(k, vi.coro)
+        try:
+            sorter.prepare()
+        except graphlib.CycleError:
+            coro.throw(RuntimeError("Cycle detected in `tinyio` loop. Cancelling all coroutines."))
 
-            try:
-                graphlib.TopologicalSorter(waiting_on).prepare()
-            except graphlib.CycleError:
-                coro.throw(RuntimeError("Cycle detected in `tinyio` loop. Cancelling all coroutines."))
+    @staticmethod
+    def _wait(wait_heap: list["_Wait"], wake_loop: threading.Event):
+        timeout = None
+        while len(wait_heap) > 0:
+            soonest = wait_heap[0]
+            assert soonest.timeout_in_seconds is not None
+            if soonest.state == _WaitState.DONE:
+                heapq.heappop(wait_heap)
             else:
-                assert False, "Something has gone wrong inside the `tinyio` loop."
+                timeout = soonest.timeout_in_seconds - time.monotonic()
+                break
+        wake_loop.wait(timeout=timeout)
+
+    @staticmethod
+    def _clear(wait_heap: list["_Wait"], wake_loop: threading.Event):
+        wake_loop.clear()
+        while len(wait_heap) > 0:
+            soonest = wait_heap[0]
+            assert soonest.timeout_in_seconds is not None
+            if soonest.state == _WaitState.DONE:
+                heapq.heappop(wait_heap)
+            elif soonest.timeout_in_seconds <= time.monotonic():
+                heapq.heappop(wait_heap)
+                soonest.notify_from_timeout()
+            else:
+                break
 
     def _step(
         self,
         todo: "_Todo",
         queue: co.deque["_Todo"],
-        waiting_on: dict[Coro, list[Coro]],
-        waiting_for: dict[Coro, "_WaitingFor"],
+        waiting_on: dict[Coro, list["_WaitingFor"]],
+        wait_heap: list["_Wait"],
+        wake_loop: threading.Event,
     ) -> None:
         try:
             out = todo.coro.send(todo.value)
         except StopIteration as e:
             self._results[todo.coro] = e.value
-            for coro in waiting_on.pop(todo.coro):
-                coro_waiting_for = waiting_for[coro]
-                coro_waiting_for.count -= 1
-                if coro_waiting_for.count == 0:
-                    del waiting_for[coro]
-                    if isinstance(coro_waiting_for.coros, list):
-                        value = [self._results[g] for g in coro_waiting_for.coros]
-                    else:
-                        value = self._results[coro_waiting_for.coros]
-                    queue.appendleft(_Todo(coro, value))
+            for waiting_for in waiting_on.pop(todo.coro):
+                waiting_for.decrement()
         else:
             original_out = out
-            if single_coroutine := isinstance(out, Generator):
+            if type(out) is list and len(out) == 0:
+                out = None
+            if isinstance(out, (_Wait, Generator)):
                 out = [out]
             match out:
                 case None:
-                    queue.appendleft(_Todo(todo.coro, None))
+                    # original_out will either be `None` or `[]`.
+                    queue.appendleft(_Todo(todo.coro, original_out))
                 case set():
+                    for out_i in out:
+                        if isinstance(out_i, Generator):
+                            if out_i not in self._results.keys() and out_i not in waiting_on.keys():
+                                queue.appendleft(_Todo(out_i, None))
+                                waiting_on[out_i] = []
+                        elif isinstance(out_i, _Wait):
+                            # Scheduling an `event.wait()` in the background corresponds to doing nothing.
+                            # We could also just replace this with error with a `pass`, as doing this is harmless.
+                            # We make it an error just because that's probably better UX? Seems like a mistake.
+                            todo.coro.throw(
+                                RuntimeError(
+                                    "Do not `yield {event.wait(), ...}`, it is meangless to both wait on an event and "
+                                    "schedule it in the background."
+                                )
+                            )
+                        else:
+                            todo.coro.throw(_invalid(original_out))
                     queue.appendleft(_Todo(todo.coro, None))
-                    for out_i in out:
-                        if not isinstance(out_i, Generator):
-                            todo.coro.throw(_invalid(out))
-                        if out_i not in waiting_on.keys():
-                            queue.appendleft(_Todo(out_i, None))
-                            waiting_on[out_i] = []
                 case list():
-                    num_done = 0
+                    waiting_for = _WaitingFor(len(out), todo.coro, original_out, wake_loop, self._results, queue)
                     for out_i in out:
-                        if not isinstance(out_i, Generator):
-                            # Not just a direct `raise` as we need to shut down this coroutine too + this gives a
-                            # nicer stack trace.
-                            todo.coro.throw(_invalid(out))
-                        if out_i in self._results.keys():
-                            # Already finished.
-                            num_done += 1
-                        elif out_i in waiting_on.keys():
-                            # Already in queue; someone else is waiting on this coroutine too.
-                            waiting_on[out_i].append(todo.coro)
+                        if isinstance(out_i, Generator):
+                            if out_i in self._results.keys():
+                                waiting_for.decrement()
+                            elif out_i in waiting_on.keys():
+                                waiting_on[out_i].append(waiting_for)
+                            else:
+                                queue.appendleft(_Todo(out_i, None))
+                                waiting_on[out_i] = [waiting_for]
+                        elif isinstance(out_i, _Wait):
+                            out_i.register(waiting_for)
+                            if out_i.timeout_in_seconds is not None:
+                                heapq.heappush(wait_heap, out_i)
                         else:
-                            # New coroutine
-                            waiting_on[out_i] = [todo.coro]
-                            queue.appendleft(_Todo(out_i, None))
-                    if num_done == len(out):
-                        # All requested coroutines already finished; immediately queue up original coroutine.
-                        # again.
-                        if single_coroutine:
-                            queue.appendleft(_Todo(todo.coro, self._results[original_out]))
-                        else:
-                            queue.appendleft(_Todo(todo.coro, [self._results[out_i] for out_i in out]))
-                    else:
-                        assert todo.coro not in waiting_for.keys()
-                        waiting_for[todo.coro] = _WaitingFor(
-                            len(out) - num_done, original_out if single_coroutine else out
-                        )
+                            todo.coro.throw(_invalid(original_out))
                 case _:
-                    todo.coro.throw(_invalid(out))
+                    todo.coro.throw(_invalid(original_out))
 
 
 class CancelledError(BaseException):
     """Raised when a `tinyio` coroutine is cancelled due an error in another coroutine."""
 
 
-Loop.__module__ = "tinyio"
 CancelledError.__module__ = "tinyio"
+
+
+#
+# Loop internals, in particular events and waiting
+#
 
 
 @dataclasses.dataclass(frozen=True)
@@ -164,10 +228,178 @@ class _Todo:
     value: Any
 
 
+# We need at least some use of locks, as `Event`s are public objects that may interact with user threads. If the
+# internals of our event/wait/waitingfor mechanisms are modified concurrently then it would be very easy for things to
+# go wrong.
+# In particular note that our event loop is one actor that is making modifications, in addition to user threads.
+# For this reason it doesn't suffice to just have a lock around `Event.{set, clear}`.
+# For simplicity, we simply guard all entries into the event/wait/waitingfor mechanism with a single lock. We could try
+# to use some other locking strategy but that seems error-prone.
+_global_event_lock = threading.RLock()
+
+
 @dataclasses.dataclass(frozen=False)
 class _WaitingFor:
-    count: int
-    coros: Coro | list[Coro]
+    counter: int
+    coro: Coro
+    out: "_Wait | Coro | list[_Wait | Coro]"
+    wake_loop: threading.Event
+    results: weakref.WeakKeyDictionary[Coro, Any]
+    queue: co.deque[_Todo]
+
+    def __post_init__(self):
+        assert self.counter > 0
+
+    def increment(self):
+        with _global_event_lock:
+            # This assert is valid as our only caller is `_Wait.unnotify_from_event`, which will only have a reference
+            # to us if we haven't completed yet -- otherwise we'd have already called its `_Wait.cleanup` method.
+            assert self.counter != 0
+            self.counter += 1
+
+    def decrement(self):
+        # We need a lock here as this may be called simultaneously between our event loop and via `Event.set`.
+        # (Though `Event.set` has its only internal lock, that doesn't cover the event loop as well.)
+        with _global_event_lock:
+            assert self.counter > 0
+            self.counter -= 1
+            if self.counter == 0:
+                match self.out:
+                    case None:
+                        result = None
+                        waits = []
+                    case _Wait():
+                        result = None
+                        waits = [self.out]
+                    case Generator():
+                        result = self.results[self.out]
+                        waits = []
+                    case list():
+                        result = [None if isinstance(out_i, _Wait) else self.results[out_i] for out_i in self.out]
+                        waits = [out_i for out_i in self.out if isinstance(out_i, _Wait)]
+                    case _:
+                        assert False
+                for wait in waits:
+                    wait.cleanup()
+                self.queue.appendleft(_Todo(self.coro, result))
+                # If we're callling this function from a thread, and the main event loop is blocked, then use this to
+                # notify the main event loop that it can wake up.
+                self.wake_loop.set()
+
+
+class _WaitState(enum.Enum):
+    INITIALISED = "initialised"
+    REGISTERED = "registered"
+    NOTIFIED_EVENT = "notified_event"
+    NOTIFIED_TIMEOUT = "notified_timeout"
+    DONE = "done"
+
+
+class _Wait:
+    def __init__(self, event: "Event", timeout_in_seconds: None | int | float):
+        self._event = event
+        self._timeout_in_seconds = timeout_in_seconds
+        self._waiting_for = None
+        self.state = _WaitState.INITIALISED
+
+    # This is basically just a second `__init__` method. We're not really initialised until this has been called
+    # precisely once as well. The reason we have two is that an end-user creates us during `Event.wait()`, and then we
+    # need to register on the event loop.
+    def register(self, waiting_for: "_WaitingFor") -> None:
+        with _global_event_lock:
+            if self.state is not _WaitState.INITIALISED:
+                waiting_for.coro.throw(
+                    RuntimeError(
+                        "Do not yield the same `event.wait()` multiple times. Make a new `.wait()` call instead."
+                    )
+                )
+            assert self._waiting_for is None
+            assert self._event is not None
+            self.state = _WaitState.REGISTERED
+            if self._timeout_in_seconds is None:
+                self.timeout_in_seconds = None
+            else:
+                self.timeout_in_seconds = time.monotonic() + self._timeout_in_seconds
+            self._waiting_for = waiting_for
+            self._event._waits[self] = None
+            if self._event.is_set():
+                self.notify_from_event()
+
+    def notify_from_event(self):
+        with _global_event_lock:
+            # We cannot have `NOTIFIED_EVENT` as our event will have toggled its internal state to `True` as part of
+            # calling us, and so future `Event.set()` calls will not call `.notify_from_event`.
+            # We cannot have `DONE` as this is only set during `.cleanup()`, and at that point we deregister from
+            # `self._event._waits`.
+            assert self.state in {_WaitState.REGISTERED, _WaitState.NOTIFIED_TIMEOUT}
+            assert self._waiting_for is not None
+            if self.state == _WaitState.REGISTERED:
+                self.state = _WaitState.NOTIFIED_EVENT
+                self._waiting_for.decrement()
+
+    def notify_from_timeout(self):
+        with _global_event_lock:
+            assert self.state in {_WaitState.REGISTERED, _WaitState.NOTIFIED_EVENT}
+            assert self._waiting_for is not None
+            is_registered = self.state == _WaitState.REGISTERED
+            self.state = _WaitState.NOTIFIED_TIMEOUT  # Override `NOTIFIED_EVENT` in case we `unnotify_from_event` later
+            if is_registered:
+                self._waiting_for.decrement()
+
+    def unnotify_from_event(self):
+        with _global_event_lock:
+            assert self.state in {_WaitState.NOTIFIED_EVENT, _WaitState.NOTIFIED_TIMEOUT}
+            assert self._waiting_for is not None
+            # But ignore un-notifies if we've already triggered our timeout.
+            if self.state is _WaitState.NOTIFIED_EVENT:
+                self.state = _WaitState.REGISTERED
+                self._waiting_for.increment()
+
+    def cleanup(self):
+        with _global_event_lock:
+            assert self.state in {_WaitState.NOTIFIED_EVENT, _WaitState.NOTIFIED_TIMEOUT}
+            assert self._waiting_for is not None
+            assert self._event is not None
+            self.state = _WaitState.DONE
+            self._waiting_for = None
+            del self._event._waits[self]
+            self._event = None  # For GC purposes.
+
+    # For `heapq` to work.
+    def __lt__(self, other):
+        return self.timeout_in_seconds < other.timeout_in_seconds
+
+
+class Event:
+    """A marker that something has happened."""
+
+    def __init__(self):
+        self._value = False
+        self._waits = dict[_Wait, None]()
+
+    def is_set(self):
+        return self._value
+
+    def set(self):
+        with _global_event_lock:
+            if not self._value:
+                for wait in self._waits.copy().keys():
+                    wait.notify_from_event()
+                self._value = True
+
+    def clear(self):
+        with _global_event_lock:
+            if self._value:
+                for wait in self._waits.keys():
+                    wait.unnotify_from_event()
+                self._value = False
+
+    def wait(self, timeout_in_seconds: None | int | float = None) -> Coro[None]:
+        # Lie about the return type, this is an implementation detail that should otherwise feel like a coroutine.
+        return _Wait(self, timeout_in_seconds)  # pyright: ignore[reportReturnType]
+
+    def __bool__(self):
+        raise TypeError("Cannot convert `tinyio.Event` to boolean. Did you mean `event.is_set()`?")
 
 
 #
@@ -185,7 +417,7 @@ def _strip_frames(e: BaseException, n: int):
 
 def _cleanup(
     base_e: BaseException,
-    waiting_on: dict[Coro, list[Coro]],
+    waiting_on: dict[Coro, list[_WaitingFor]],
     current_coro_ref: list[Coro],
     exception_group: None | bool,
 ):
@@ -213,6 +445,8 @@ def _cleanup(
         except BaseException as e:
             # Skipped frame is the `coro.throw` above.
             other_errors[coro] = _strip_frames(e, 1)
+            if getattr(e, "__tinyio_no_warn__", False):
+                continue
             details = "".join(traceback.format_exception_only(e)).strip()
             what_did = f"raised the exception `{details}`."
         else:
@@ -259,7 +493,8 @@ def _cleanup(
             # Either no-one is waiting on us and we're at the root, or multiple are waiting and we can't uniquely append
             # tracebacks any more.
             break
-        [coro] = waiting_on[coro]
+        [waiting_for] = waiting_on[coro]
+        coro = waiting_for.coro
     base_e.with_traceback(tb)  # pyright: ignore[reportPossiblyUnboundVariable]
     if exception_group is None:
         exception_group = len(other_errors) > 0
@@ -291,7 +526,7 @@ def _cleanup(
 
 
 def _invalid(out):
-    msg = f"Invalid yield {out}. Must be either `None`, a coroutine, or a list of coroutines."
+    msg = f"Invalid yield {out}. Must be either `None`, a coroutine, or a list/set of coroutines."
     if type(out) is tuple:
         # We could support this but I find the `[]` visually distinctive.
         msg += (
