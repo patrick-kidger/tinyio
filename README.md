@@ -1,5 +1,5 @@
 <h1 align="center">tinyio</h1>
-<h2 align="center">A tiny (~200 lines) event loop for Python</h2>
+<h2 align="center">A tiny (~300 lines) event loop for Python</h2>
 
 _Ever used `asyncio` and wished you hadn't?_
 
@@ -219,11 +219,11 @@ The output of each coroutine is stored on the `Loop()` class. If you attempt to 
 
 I wasted a *lot* of time trying to get correct error propagation with `asyncio`, trying to reason whether my tasks would be cleaned up correctly or not (edge-triggered vs level-triggered etc etc). `trio` is excellent but still has a one-loop-per-thread rule, and doesn't propagate cancellations to/from threads. These points inspired me to try writing my own.
 
-`tinyio` has the following unique features, and as such may be the right choice if any of these are must-haves for you:
+`tinyio` has the following unique features, and as such may be the right choice if any of the following are must-haves for you:
 
 - the propagation of errors to/from threads;
 - no one-loop-per-thread rule;
-- simple error semantics (crash the whole loop if anything goes wrong);
+- simple+robust error semantics (crash the whole loop if anything goes wrong);
 - tiny, hackable, codebase.
 
 However conversely, `tinyio` does not offer the ability to schedule work on the event loop whilst cleaning up from errors.
