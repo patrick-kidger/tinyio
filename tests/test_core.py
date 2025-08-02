@@ -2,6 +2,7 @@ import contextlib
 import gc
 import threading
 import time
+import weakref
 from typing import Any
 
 import pytest
@@ -261,7 +262,7 @@ def test_no_yield_indirect():
     assert loop.run(g()) == 3
 
 
-def test_gc():
+def test_gc_simple():
     def _block_add_one(x):
         return x + 1
 
@@ -279,6 +280,53 @@ def test_gc():
     assert loop.run(coro) == (5, 5)
     gc.collect()
     assert set(loop._results.keys()) == {coro}
+
+
+@pytest.mark.parametrize("yield_from", (False, True))
+@pytest.mark.parametrize("timeout", (None, 10))
+def test_gc_after_event(yield_from, timeout):
+    """The interesting case here is `yield_from=True`, `timeout=10`.
+    (The others are just for completeness.)
+
+    In this case we have that:
+    - `f1` has `timeout=10` but triggers immediately.
+    - `f2` has `timeout=2` but triggers at the end of our main coroutine.
+    And so we have that `f2` is before of `f1` in the internal heap of timeouts, but that `f1` will trigger first.
+    Thus when `f1` triggers it will remain in that heap even after it has triggered (until `f2` has triggered as well
+    and they can both be popped).
+    In this scenario, we don't want the generator object to remain in memory just because it's still sitting in that
+    heap!
+    This test checks that the generator can be cleaned up even whilst we wait for the `_Wait` object to get collected
+    later.
+    """
+
+    def wait(event, wait_time):
+        if yield_from:
+            yield from event.wait(wait_time)
+        else:
+            yield event.wait(wait_time)
+
+    def set_event(event):
+        for _ in range(20):
+            yield
+        event.set()
+
+    def baz():
+        event1 = tinyio.Event()
+        event2 = tinyio.Event()
+        f1 = wait(event1, timeout)
+        f2 = wait(event2, 2)
+        ref = weakref.ref(f1)
+        yield {f2}
+        yield [f1, set_event(event1)]
+        del f1
+        gc.collect()
+        assert ref() is None
+        event2.set()
+        return 3
+
+    loop = tinyio.Loop()
+    assert loop.run(baz()) == 3
 
 
 def test_event_fairness():

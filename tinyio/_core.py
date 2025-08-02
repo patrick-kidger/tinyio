@@ -350,7 +350,7 @@ class _Wait:
             assert self._waiting_for is not None
             assert self._event is not None
             self.state = _WaitState.DONE
-            self._waiting_for = None
+            self._waiting_for = None  # For GC purposes.
             del self._event._waits[self]
             self._event = None  # For GC purposes.
 
