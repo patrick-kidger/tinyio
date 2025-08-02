@@ -1,5 +1,5 @@
 <h1 align="center">tinyio</h1>
-<h2 align="center">A tiny (~200 lines) event loop for Python</h2>
+<h2 align="center">A tiny (~300 lines) event loop for Python</h2>
 
 _Ever used `asyncio` and wished you hadn't?_
 
