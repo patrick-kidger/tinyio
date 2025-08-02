@@ -1,5 +1,7 @@
 import gc
+import threading
 import time
+from typing import Any
 
 import pytest
 import tinyio
@@ -316,3 +318,124 @@ def test_event_fairness2():
     loop = tinyio.Loop()
     loop.run(g())
     assert outs == [1, 2]
+
+
+def test_simultaneous_set():
+    event = tinyio.Event()
+
+    def f():
+        for _ in range(20):
+            yield
+        yield [tinyio.run_in_thread(event.set) for _ in range(100)]
+
+    def g():
+        yield event.wait()
+
+    def h():
+        yield [g(), f()]
+
+    loop = tinyio.Loop()
+    loop.run(h())
+
+
+def test_timeout_then_set():
+    event1 = tinyio.Event()
+    event2 = tinyio.Event()
+
+    def f():
+        yield [event1.wait(0), event2.wait()]
+
+    def g():
+        yield {f()}
+        for _ in range(20):
+            yield
+        event1.set()
+        for _ in range(20):
+            yield
+        event2.set()
+        return 3
+
+    loop = tinyio.Loop()
+    assert loop.run(g()) == 3
+
+
+def test_set_then_timeout():
+    event1 = tinyio.Event()
+    event2 = tinyio.Event()
+
+    def f():
+        event1.set()
+        yield [event1.wait(0), event2.wait()]
+
+    def g():
+        yield {f()}
+        for _ in range(20):
+            yield
+        event2.set()
+        return 3
+
+    loop = tinyio.Loop()
+    assert loop.run(g()) == 3
+
+
+def test_set_then_timeout_then_clear():
+    event1 = tinyio.Event()
+    event2 = tinyio.Event()
+
+    def f():
+        event1.set()
+        yield [event1.wait(0), event2.wait()]
+
+    def g():
+        yield {f()}
+        for _ in range(20):
+            yield
+        event1.clear()
+        event2.set()
+        return 3
+
+    loop = tinyio.Loop()
+    assert loop.run(g()) == 3
+
+
+def test_set_then_timeout_then_clear_then_set():
+    event1 = tinyio.Event()
+    event2 = tinyio.Event()
+
+    def f():
+        event1.set()
+        yield [event1.wait(0), event2.wait()]
+
+    def g():
+        yield {f()}
+        for _ in range(20):
+            yield
+        event1.clear()
+        event2.set()
+        event1.set()
+        return 3
+
+    loop = tinyio.Loop()
+    assert loop.run(g()) == 3
+
+
+def test_timeout_as_part_of_group_and_only_coroutine():
+    event1 = tinyio.Event()
+    event2 = tinyio.Event()
+    wait: Any = event1.wait(0)
+    wait2 = event2.wait()
+
+    def f():
+        yield [wait, wait2]
+        return 3
+
+    def set2():
+        while wait.state != tinyio._core._WaitState.NOTIFIED_TIMEOUT:
+            pass
+        time.sleep(0.1)
+        event2.set()
+
+    t = threading.Thread(target=set2)
+    t.start()
+    loop = tinyio.Loop()
+    assert loop.run(f()) == 3
