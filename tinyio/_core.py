@@ -66,13 +66,13 @@ class Loop:
         queue.appendleft(_Todo(coro, None))
         waiting_on = dict[Coro, list[_WaitingFor]]()
         waiting_on[coro] = []
-        wait_heap: list[_Wait] = []
         # Loop invariant: `{x.coro for x in queue}.issubset(set(waiting_on.keys()))`
+        wait_heap: list[_Wait] = []
         wake_loop = threading.Event()
         wake_loop.set()
+        current_coro_ref = [coro]
         # Loop invariant: `len(current_coro_ref) == 1`. It's not really load-bearing, it's just used for making a nice
         # traceback when we get an error.
-        current_coro_ref = [coro]
         try:
             while True:
                 if len(queue) == 0:
@@ -87,10 +87,9 @@ class Loop:
                         while len(queue) == 0:
                             self._wait(wait_heap, wake_loop)
                             self._clear(wait_heap, wake_loop)
-                            # This whole block needs to be wrapped in a `len(queue)` check, as just because we've
-                            # unblocked doesn't necessarily mean that we're ready to schedule a coroutine: we could have
-                            # something like `yield [event1.wait(...), event2.wait(...)]`, and only one of the two has
-                            # unblocked.
+                            # These lines needs to be wrapped in a `len(queue)` check, as just because we've unblocked
+                            # doesn't necessarily mean that we're ready to schedule a coroutine: we could have something
+                            # like `yield [event1.wait(...), event2.wait(...)]`, and only one of the two has unblocked.
                 else:
                     self._clear(wait_heap, wake_loop)
                 todo = queue.pop()
@@ -296,12 +295,7 @@ class _Wait:
     # need to register on the event loop.
     def register(self, waiting_for: "_WaitingFor") -> None:
         with _global_event_lock:
-            if self.state is not _WaitState.INITIALISED:
-                waiting_for.coro.throw(
-                    RuntimeError(
-                        "Do not yield the same `event.wait()` multiple times. Make a new `.wait()` call instead."
-                    )
-                )
+            assert self.state is _WaitState.INITIALISED
             assert self._waiting_for is None
             assert self._event is not None
             self.state = _WaitState.REGISTERED
