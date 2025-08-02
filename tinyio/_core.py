@@ -172,6 +172,8 @@ class Loop:
                                 waiting_on[out_i] = []
                         else:
                             assert not isinstance(out_i, _Wait)
+                            if out_i.gi_frame is None:
+                                todo.coro.throw(_already_finished(out_i))
                             todo.coro.throw(_invalid(original_out))
                     queue.appendleft(_Todo(todo.coro, None))
                 case list():
@@ -183,6 +185,8 @@ class Loop:
                             elif out_i in waiting_on.keys():
                                 waiting_on[out_i].append(waiting_for)
                             else:
+                                if out_i.gi_frame is None:
+                                    todo.coro.throw(_already_finished(out_i))
                                 queue.appendleft(_Todo(out_i, None))
                                 waiting_on[out_i] = [waiting_for]
                         elif isinstance(out_i, _Wait):
@@ -518,3 +522,10 @@ def _invalid(out):
             "not `yield foo, bar`."
         )
     return RuntimeError(msg)
+
+
+def _already_finished(out):
+    return RuntimeError(
+        f"The coroutine `{out}` has already finished. However it has not been seen by the `tinyio` loop before and as "
+        "such does not have any result associated with it."
+    )
