@@ -242,7 +242,7 @@ class Loop:
         queue.appendleft(_Todo(coro, None))
         waiting_on = dict[Coro, list[_WaitingFor]]()
         waiting_on[coro] = []
-        wait_heap = []
+        wait_heap: list[_Wait] = []
         # Loop invariant: `{x.coro for x in queue}.issubset(set(waiting_on.keys()))`
         wake_loop = threading.Event()
         wake_loop.set()
@@ -260,18 +260,8 @@ class Loop:
                         self._check_cycle(waiting_on, coro)
                         # ...but hopefully we're just waiting on a thread or exogeneous event to unblock one of our
                         # coroutines.
-                        timeout = None
-                        wait = None
-                        while len(wait_heap) > 0:
-                            wait = heapq.heappop(wait_heap)
-                            if wait.state != _WaitState.DONE:
-                                timeout = wait.timeout_in_seconds - time.monotonic()
-                                break
-                        not_timed_out = wake_loop.wait(timeout=timeout)
-                        if not not_timed_out:
-                            cast(_Wait, wait).notify_from_timeout()
-                        del timeout, wait, not_timed_out
-                wake_loop.clear()
+                        self._wait(wait_heap, wake_loop)
+                self._clear(wait_heap, wake_loop)
                 todo = queue.pop()
                 current_coro_ref[0] = todo.coro
                 self._step(todo, queue, waiting_on, wait_heap, wake_loop)
@@ -291,6 +281,32 @@ class Loop:
             sorter.prepare()
         except graphlib.CycleError:
             coro.throw(RuntimeError("Cycle detected in `tinyio` loop. Cancelling all coroutines."))
+
+    def _wait(self, wait_heap: list[_Wait], wake_loop: threading.Event):
+        timeout = None
+        while len(wait_heap) > 0:
+            soonest = wait_heap[0]
+            assert soonest.timeout_in_seconds is not None
+            if soonest.state == _WaitState.DONE:
+                heapq.heappop(wait_heap)
+            else:
+                timeout = soonest.timeout_in_seconds - time.monotonic()
+                break
+        wake_loop.wait(timeout=timeout)
+
+    def _clear(self, wait_heap: list[_Wait], wake_loop: threading.Event):
+        wake_loop.clear()
+        now = time.monotonic()
+        while len(wait_heap) > 0:
+            soonest = wait_heap[0]
+            assert soonest.timeout_in_seconds is not None
+            if soonest.state == _WaitState.DONE:
+                heapq.heappop(wait_heap)
+            elif soonest.timeout_in_seconds < now:
+                heapq.heappop(wait_heap)
+                soonest.notify_from_timeout()
+            else:
+                break
 
     def _step(
         self,
