@@ -276,3 +276,43 @@ def test_gc():
     assert loop.run(coro) == (5, 5)
     gc.collect()
     assert set(loop._results.keys()) == {coro}
+
+
+def test_event_fairness():
+    """This checks that once one event unblocks, that we don't just keep chasing all the stuff downstream of that event,
+    i.e. that we do schedule work from any other event that has finished.
+    """
+    outs = []
+
+    def f():
+        yield tinyio.Event().wait(0)
+        outs.append(1)
+        for _ in range(20):
+            yield
+        outs.append(2)
+
+    def g():
+        yield [f(), f()]
+
+    loop = tinyio.Loop()
+    loop.run(g())
+    assert outs == [1, 1, 2, 2]
+
+
+def test_event_fairness2():
+    event1 = tinyio.Event()
+    outs = []
+
+    def f():
+        yield event1.wait(0)
+        outs.append(1)
+
+    def g():
+        yield {f()}
+        for _ in range(20):
+            yield
+        outs.append(2)
+
+    loop = tinyio.Loop()
+    loop.run(g())
+    assert outs == [1, 2]
