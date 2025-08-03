@@ -167,12 +167,12 @@ class Loop:
                     for out_i in out:
                         if isinstance(out_i, Generator):
                             if out_i not in self._results.keys() and out_i not in waiting_on.keys():
+                                if out_i.gi_frame is None:
+                                    todo.coro.throw(_already_finished(out_i))
                                 queue.appendleft(_Todo(out_i, None))
                                 waiting_on[out_i] = []
                         else:
                             assert not isinstance(out_i, _Wait)
-                            if out_i.gi_frame is None:
-                                todo.coro.throw(_already_finished(out_i))
                             todo.coro.throw(_invalid(original_out))
                     queue.appendleft(_Todo(todo.coro, None))
                 case list():
