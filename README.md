@@ -98,31 +98,22 @@ We ship batteries-included with the usual collection of standard operations.
 <details><summary>Click to expand</summary>
 
 ```python
-tinyio.add_done_callback        tinyio.Semaphore
-tinyio.AsCompleted              tinyio.ThreadPool
-tinyio.Barrier                  tinyio.timeout
-tinyio.Event                    tinyio.TimeoutError
-tinyio.Lock
+tinyio.as_completed       tinyio.Semaphore
+tinyio.Barrier            tinyio.ThreadPool
+tinyio.Event              tinyio.timeout
+tinyio.Lock               tinyio.TimeoutError
 ```
 
 ---
 
-- `tinyio.add_done_callback(coro, success_callback)`
-
-    Used as `yield {tinyio.add_done_callback(coro, success_callback)}`.
-
-    This wraps `coro` so that `success_callback(out)` is called on its output once it completes. Note the `{...}` above, indicating calling this in nonblocking fashion (otherwise you could just directly call the callbacks yourself).
-
----
-
-- `tinyio.AsCompleted({coro1, coro2, ...})`
+- `tinyio.as_completed({coro1, coro2, ...})`
 
     This schedules multiple coroutines in the background (like `yield {coro1, coro2, ...}`), and then offers their results in the order they complete.
 
     This is iterated over in the following way, using its `.done()` and `.get()` methods:
     ```python
     def main():
-        iterator = tinyio.AsCompleted({coro1, coro2, coro3})
+        iterator = yield tinyio.as_completed({coro1, coro2, coro3})
         while not iterator.done():
             x = yield iterator.get()
     ```

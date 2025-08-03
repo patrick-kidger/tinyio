@@ -1,4 +1,4 @@
-from ._background import AsCompleted as AsCompleted, add_done_callback as add_done_callback
+from ._background import as_completed as as_completed
 from ._core import (
     CancelledError as CancelledError,
     Coro as Coro,

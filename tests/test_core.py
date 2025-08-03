@@ -270,7 +270,7 @@ def test_gc_simple():
         return (yield tinyio.run_in_thread(_block_add_one, x))
 
     def _gc(x: int) -> tinyio.Coro[tuple[int, int]]:
-        iterator = tinyio.AsCompleted({_foo(x), _add_one(x)})
+        iterator = yield tinyio.as_completed({_foo(x), _add_one(x)})
         y = yield iterator.get()
         z = yield iterator.get()
         return y, z

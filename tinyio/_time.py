@@ -1,7 +1,6 @@
 import contextlib
 from typing import TypeVar
 
-from ._background import add_done_callback
 from ._core import Coro, Event
 
 
@@ -45,11 +44,12 @@ def timeout(coro: Coro[_T], timeout_in_seconds: int | float) -> Coro[tuple[None 
     done = Event()
     outs = []
 
-    def callback(out):
+    def wrapper():
+        out = yield coro
         outs.append(out)
         done.set()
 
-    yield {add_done_callback(coro, callback)}
+    yield {wrapper()}
     yield from done.wait(timeout_in_seconds)
     if len(outs) == 0:
         with contextlib.suppress(TimeoutError):

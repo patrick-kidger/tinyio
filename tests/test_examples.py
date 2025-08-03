@@ -14,7 +14,7 @@ def test_dataloading():
     def main():
         iterator = range(100)
         pool = tinyio.ThreadPool(16)
-        async_iterator = tinyio.AsCompleted({pool.run_in_thread(slow_transform, item) for item in iterator})
+        async_iterator = yield tinyio.as_completed({pool.run_in_thread(slow_transform, item) for item in iterator})
         while not async_iterator.done():
             out = yield async_iterator.get()
             outs.append(out)
