@@ -55,7 +55,7 @@ Coroutines can `yield` four possible things:
 - `yield [coro1, coro2, coro3]`: wait on multiple coroutines by putting them in a list, and resume with a list of outputs once all have completed. This is what asyncio calls a 'gather' or 'TaskGroup', and what trio calls a 'nursery'.
 - `yield {coro1, coro2, coro3}`: schedule one or more coroutines but do not wait on their result - they will run independently in the background.
 
-You can safely `yield` the same coroutine multiple times, e.g. perhaps four coroutines have a diamond dependency pattern, with two coroutines each depending on a single shared one.
+If you `yield` on the same coroutine multiple times (e.g. in a diamond dependency pattern) then the coroutine will be scheduled once, and on completion all dependees will receive its output. (You can even do this if the coroutine has already finished: `yield` on it to retrieve its output.)
 
 ### Threading
 
@@ -131,10 +131,10 @@ tinyio.Lock               tinyio.TimeoutError
     This is a wrapper around a boolean flag, initialised with `False`.
     This has the following methods:
     
-    - `.is_set()`: check the value of the flag.
+    - `.is_set()`: return the value of the flag.
     - `.set()`: set the flag to `True`.
     - `.clear()`: set the flag to `False`.
-    - `.wait()`, which is a coroutine you can `yield` on. This will unblock if the internal flag is `True`. (Typically this is accomplished by calling `.set()` from another coroutine or from a thread.)
+    - `.wait(timeout_in_seconds=None)`, which is a coroutine you can `yield` on. This will unblock if the internal flag is `True` or if `timeout_in_seconds` seconds pass. (Typically the former is accomplished by calling `.set()` from another coroutine or from a thread.)
 
 ---
 
