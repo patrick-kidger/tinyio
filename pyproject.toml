@@ -23,10 +23,14 @@ urls = {repository = "https://github.com/patrick-kidger/tinyio"}
 version = "0.2.0"
 
 [project.optional-dependencies]
-dev = ["pre-commit", "pytest"]
+dev = ["pre-commit"]
+tests = ["pytest"]
 
 [tool.hatch.build]
 include = ["tinyio/*"]
+reportFunctionMemberAccess = false
+reportIncompatibleMethodOverride = true
+reportIncompatibleVariableOverride = false
 
 [tool.pyright]
 include = ["tinyio", "tests"]
@@ -48,5 +52,6 @@ select = ["E", "F", "I001", "UP"]
 
 [tool.ruff.lint.isort]
 combine-as-imports = true
+extra-standard-library = ["typing_extensions"]
 lines-after-imports = 2
 order-by-type = true
