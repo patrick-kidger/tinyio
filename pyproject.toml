@@ -24,7 +24,7 @@ version = "0.2.0"
 
 [project.optional-dependencies]
 dev = ["pre-commit"]
-tests = ["pytest"]
+tests = ["pytest", "trio"]
 
 [tool.hatch.build]
 include = ["tinyio/*"]
