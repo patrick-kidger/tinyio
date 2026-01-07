@@ -531,3 +531,26 @@ def test_run_finished_coroutine2():
     ff = f()
     assert loop.run(ff) == 4
     assert loop.run(ff) == 4
+
+
+@pytest.mark.parametrize("num_yields", (0, 1, 20))
+def test_reentrant(num_yields):
+    loop = tinyio.Loop()
+
+    def f():
+        return (yield [gg, h()])
+
+    def g():
+        for _ in range(num_yields):
+            yield
+        return 4
+
+    gg = g()
+
+    def h():
+        yield
+        out = loop.run(gg)
+        return out
+
+    with pytest.raises(RuntimeError, match="whilst the loop is currently running"):
+        assert loop.run(f()) == [4, 4]
