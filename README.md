@@ -23,7 +23,7 @@ out = loop.run(foo())
 assert out == (4, 5)
 ```
 
-- Somewhat unusually, our syntax uses `yield` rather than `await`, but the behaviour is the same. Await another coroutine with `yield coro`. Await on multiple with `yield [coro1, coro2, ...]` (a 'gather' in asyncio terminology; a 'nursery' in trio terminology).
+- Somewhat unusually, our syntax uses `yield` rather than `await`, but the behaviour is the same. Await another coroutine with `yield coro`. Await on multiple with `yield [coro1, coro2, ...]` (a 'gather' in `asyncio` terminology; a 'nursery' in `trio` terminology).
 - An error in one coroutine will cancel all coroutines across the entire event loop.
     - If the erroring coroutine is sequentially depended on by a chain of other coroutines, then we chain their tracebacks for easier debugging.
     - Errors propagate to and from synchronous operations ran in threads.
@@ -52,7 +52,7 @@ Coroutines can `yield` four possible things:
 
 - `yield`: yield nothing, this just pauses and gives other coroutines a chance to run.
 - `yield coro`: wait on a single coroutine, in which case we'll resume with the output of that coroutine once it is available.
-- `yield [coro1, coro2, coro3]`: wait on multiple coroutines by putting them in a list, and resume with a list of outputs once all have completed. This is what asyncio calls a 'gather' or 'TaskGroup', and what trio calls a 'nursery'.
+- `yield [coro1, coro2, coro3]`: wait on multiple coroutines by putting them in a list, and resume with a list of outputs once all have completed. This is what `asyncio` calls a 'gather' or 'TaskGroup', and what `trio` calls a 'nursery'.
 - `yield {coro1, coro2, coro3}`: schedule one or more coroutines but do not wait on their result - they will run independently in the background.
 
 If you `yield` on the same coroutine multiple times (e.g. in a diamond dependency pattern) then the coroutine will be scheduled once, and on completion all dependees will receive its output. (You can even do this if the coroutine has already finished: `yield` on it to retrieve its output.)
@@ -177,6 +177,100 @@ tinyio.Lock               tinyio.TimeoutError
     - `.run_in_thread(fn, *args, **kwargs)`, which is a coroutine you can `yield` on. This is equivalent to `yield tinyio.run_in_thread(fn, *args, **kwargs)`.
     - `.map(fn, xs)`, which is a coroutine you can `yield` on. This is equivalent to `yield [tinyio.run_in_thread(fn, x) for x in xs]`.
  
+---
+
+</details>
+
+### Integration with `asyncio` and `trio`
+
+We have support for putting `trio` event loops within `asyncio`/`trio` event loops, or vice-versa.
+
+<details><summary>Click to expand</summary>
+
+```python
+tinyio.to_asyncio         tinyio.to_trio
+tinyio.from_asyncio       tinyio.from_trio
+```
+
+---
+
+- `tinyio.to_asyncio(coro, exception_group=None)`
+
+    This converts a `tinyio` coroutine into an `asyncio` coroutine.
+
+    For example:
+    ```python
+    def add_one(x):
+        yield tinyio.sleep(1)
+        return x + 1
+
+    async def foo(x):
+        y = await tinyio.to_asyncio(add_one(x))
+        return y
+
+    asyncio.run(foo(3))
+    ```
+
+---
+
+- `tinyio.from_asyncio(coro)`
+
+    This converts an `asyncio` coroutine into a `tinyio` coroutine.
+
+    > WARNING!  
+    > This works by running the entire `asyncio` portion in a separate thread. This may lead to surprises if the `asyncio` and non-`asyncio` portions interact in non-threadsafe ways.
+
+    For example:
+    ```python
+    async def add_one(x):
+        await asyncio.sleep(1)
+        return x + 1
+
+    def foo(x):
+        y = yield tinyio.from_asyncio(add_one(x))
+        return y
+
+    tinyio.Loop().run(foo(3))
+    ```
+
+---
+
+- `tinyio.to_trio(coro, exception_group=None)`
+
+    This converts a `tinyio` coroutine into an `trio` coroutine.
+
+    For example:
+    ```python
+    def add_one(x):
+        yield tinyio.sleep(1)
+        return x + 1
+
+    async def foo(x):
+        y = await tinyio.to_trio(add_one(x))
+        return y
+
+    trio.run(foo, 3)
+    ```
+
+---
+
+- `tinyio.from_trio(async_fn, *args)`
+
+    This converts an `trio` coroutine into a `tinyio` coroutine.
+
+    For example:
+    ```python
+    async def add_one(x):
+        await trio.sleep(1)
+        return x + 1
+
+    def foo(x):
+        y = yield tinyio.from_trio(add_one, x)
+        return y
+
+    tinyio.Loop().run(foo(3))
+    ```
+
 ---
 
 </details>
