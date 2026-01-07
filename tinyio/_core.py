@@ -441,10 +441,23 @@ def _cleanup(
             category=RuntimeWarning,
             stacklevel=3,
         )
-    # 2 skipped frames:
-    # `self._step`
-    # either `coro.throw(...)` or `todo.coro.send(todo.value)`
-    _strip_frames(base_e, 2)  # pyright: ignore[reportPossiblyUnboundVariable]
+    tb = base_e.__traceback__
+    while tb is not None:
+        tb_next = tb.tb_next
+        if tb_next is None:
+            break
+        else:
+            tb = tb_next
+    if tb is None:
+        module_e = ""
+    else:
+        module_e = tb.tb_frame.f_globals.get("__name__", "")
+    if not module_e.startswith("tinyio."):
+        # 2 skipped frames:
+        # `self._step`
+        # either `coro.throw(...)` or `todo.coro.send(todo.value)`
+        # Don't skip them if the error was an internal error in tinyio, or a KeyboardInterrupt.
+        _strip_frames(base_e, 2)  # pyright: ignore[reportPossiblyUnboundVariable]
     # Next: bit of a heuristic, but it is pretty common to only have one thing waiting on you, so stitch together
     # their tracebacks as far as we can. Thinking about specifically `current_coro`:
     #
