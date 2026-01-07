@@ -38,6 +38,7 @@ class Loop:
         # It's a weakref as if no-one else has access to them then they cannot appear in our event loop, so we don't
         # need to keep their results around for the above use-case.
         self._results = weakref.WeakKeyDictionary()
+        self._running = False
 
     def run(self, coro: Coro[_Return], exception_group: None | bool = None) -> _Return:
         """Run the specified coroutine in the event loop.
@@ -85,6 +86,21 @@ class Loop:
         """
         if not isinstance(coro, Generator):
             raise ValueError("Invalid input `coro`, which is not a coroutine (a function using `yield` statements).")
+        if self._running:
+            raise RuntimeError("Cannot call `tinyio.Loop().run` whilst the loop is currently running.")
+        self._running = True
+        try:
+            return (yield from self._runtime(coro, exception_group))
+        except BaseException as e:
+            _strip_frames(e, 1)
+            raise
+        finally:
+            assert self._running
+            self._running = False
+
+    def _runtime(
+        self, coro: Coro[_Return], exception_group: None | bool
+    ) -> Generator[None | Callable[[], None], None, _Return]:
         if coro in self._results.keys():
             return self._results[coro]
         queue: co.deque[_Todo] = co.deque()
@@ -110,7 +126,15 @@ class Loop:
                         # ...but hopefully we're just waiting on a thread or exogeneous event to unblock one of our
                         # coroutines.
                         while len(queue) == 0:
-                            timeout = self._get_timeout(wait_heap)
+                            timeout = None
+                            while len(wait_heap) > 0:
+                                soonest = wait_heap[0]
+                                assert soonest.timeout_in_seconds is not None
+                                if soonest.state == _WaitState.DONE:
+                                    heapq.heappop(wait_heap)
+                                else:
+                                    timeout = soonest.timeout_in_seconds - time.monotonic()
+                                    break
 
                             def wait():
                                 wake_loop.wait(timeout=timeout)
@@ -143,19 +167,6 @@ class Loop:
             sorter.prepare()
         except graphlib.CycleError:
             coro.throw(RuntimeError("Cycle detected in `tinyio` loop. Cancelling all coroutines."))
-
-    @staticmethod
-    def _get_timeout(wait_heap: list["_Wait"]) -> None | float:
-        timeout = None
-        while len(wait_heap) > 0:
-            soonest = wait_heap[0]
-            assert soonest.timeout_in_seconds is not None
-            if soonest.state == _WaitState.DONE:
-                heapq.heappop(wait_heap)
-            else:
-                timeout = soonest.timeout_in_seconds - time.monotonic()
-                break
-        return timeout
 
     @staticmethod
     def _clear(wait_heap: list["_Wait"], wake_loop: threading.Event):
