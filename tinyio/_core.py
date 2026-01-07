@@ -9,7 +9,7 @@ import traceback
 import types
 import warnings
 import weakref
-from collections.abc import Generator
+from collections.abc import Callable, Generator
 from typing import Any, TypeAlias, TypeVar
 
 
@@ -60,6 +60,29 @@ class Loop:
 
         The final `return` from `coro`.
         """
+        gen = self.runtime(coro, exception_group)
+        while True:
+            try:
+                wait = next(gen)
+            except StopIteration as e:
+                return e.value
+            except BaseException as e:
+                _strip_frames(e, 1)
+                raise
+            if wait is not None:
+                wait()
+
+    def runtime(
+        self, coro: Coro[_Return], exception_group: None | bool
+    ) -> Generator[None | Callable[[], None], None, _Return]:
+        """The generator for driving the event loop. This is low-level functionality that makes it possible to iterate
+        the loop by just a single step at a time. This is typically useful for integrating with another event loop.
+
+        See `tinyio.Loop.run` for an example of how to iterate through this until completion.
+
+        Yields `None` after each step to cede control, or a callable indicating the loop is blocked waiting for an event
+        or timeout.
+        """
         if not isinstance(coro, Generator):
             raise ValueError("Invalid input `coro`, which is not a coroutine (a function using `yield` statements).")
         if coro in self._results.keys():
@@ -87,7 +110,12 @@ class Loop:
                         # ...but hopefully we're just waiting on a thread or exogeneous event to unblock one of our
                         # coroutines.
                         while len(queue) == 0:
-                            self._wait(wait_heap, wake_loop)
+                            timeout = self._get_timeout(wait_heap)
+
+                            def wait():
+                                wake_loop.wait(timeout=timeout)
+
+                            yield wait
                             self._clear(wait_heap, wake_loop)
                             # These lines needs to be wrapped in a `len(queue)` check, as just because we've unblocked
                             # doesn't necessarily mean that we're ready to schedule a coroutine: we could have something
@@ -97,11 +125,13 @@ class Loop:
                 todo = queue.pop()
                 current_coro_ref[0] = todo.coro
                 self._step(todo, queue, waiting_on, wait_heap, wake_loop)
+                yield
             current_coro_ref[0] = coro
         except BaseException as e:
             _cleanup(e, waiting_on, current_coro_ref, exception_group)
             raise  # if not raising an `exception_group`
-        return self._results[coro]
+        out = self._results[coro]
+        return out
 
     @staticmethod
     def _check_cycle(waiting_on, coro):
@@ -115,7 +145,7 @@ class Loop:
             coro.throw(RuntimeError("Cycle detected in `tinyio` loop. Cancelling all coroutines."))
 
     @staticmethod
-    def _wait(wait_heap: list["_Wait"], wake_loop: threading.Event):
+    def _get_timeout(wait_heap: list["_Wait"]) -> None | float:
         timeout = None
         while len(wait_heap) > 0:
             soonest = wait_heap[0]
@@ -125,7 +155,7 @@ class Loop:
             else:
                 timeout = soonest.timeout_in_seconds - time.monotonic()
                 break
-        wake_loop.wait(timeout=timeout)
+        return timeout
 
     @staticmethod
     def _clear(wait_heap: list["_Wait"], wake_loop: threading.Event):
