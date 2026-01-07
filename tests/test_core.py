@@ -503,3 +503,31 @@ def test_yield_finished_coroutine():
     loop = tinyio.Loop()
     with pytest.raises(RuntimeError, match="has already finished"):
         loop.run(g())
+
+
+def test_run_finished_coroutine1():
+    loop = tinyio.Loop()
+
+    def f():
+        return (yield gg)
+
+    def g():
+        yield
+        return 4
+
+    gg = g()
+
+    assert loop.run(f()) == 4
+    assert loop.run(gg) == 4
+
+
+def test_run_finished_coroutine2():
+    loop = tinyio.Loop()
+
+    def f():
+        yield
+        return 4
+
+    ff = f()
+    assert loop.run(ff) == 4
+    assert loop.run(ff) == 4

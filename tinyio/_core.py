@@ -62,6 +62,8 @@ class Loop:
         """
         if not isinstance(coro, Generator):
             raise ValueError("Invalid input `coro`, which is not a coroutine (a function using `yield` statements).")
+        if coro in self._results.keys():
+            return self._results[coro]
         queue: co.deque[_Todo] = co.deque()
         queue.appendleft(_Todo(coro, None))
         waiting_on = dict[Coro, list[_WaitingFor]]()
@@ -150,6 +152,7 @@ class Loop:
         try:
             out = todo.coro.send(todo.value)
         except StopIteration as e:
+            assert todo.coro not in self._results.keys()
             self._results[todo.coro] = e.value
             for waiting_for in waiting_on.pop(todo.coro):
                 waiting_for.decrement()
