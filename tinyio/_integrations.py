@@ -1,6 +1,6 @@
 import queue
 from collections.abc import Callable, Coroutine
-from typing import Any, TypeVar
+from typing import Any, TypeVar, cast
 
 from ._core import Coro, Event, Loop
 from ._thread import run_in_thread
@@ -52,16 +52,17 @@ def from_trio(async_fn: Callable[..., Any], *args: Any) -> Coro[_Return]:
 
     callback_queue: queue.Queue[Callable[[], Any]] = queue.Queue()
     event = Event()
-    result_holder: list[Any] = [None]
-    is_done = [False]
+    outcome_ref = [None]
+    done_ref = [False]
 
+    # I think this should be threadsafe as-is without any extra threading locks etc. necessary.
     def run_sync_soon_threadsafe(fn: Callable[[], Any]) -> None:
         callback_queue.put(fn)
         event.set()
 
     def done_callback(outcome: Any) -> None:
-        result_holder[0] = outcome
-        is_done[0] = True
+        outcome_ref[0] = outcome
+        done_ref[0] = True
         event.set()
 
     trio.lowlevel.start_guest_run(
@@ -71,7 +72,7 @@ def from_trio(async_fn: Callable[..., Any], *args: Any) -> Coro[_Return]:
         done_callback=done_callback,
     )
 
-    while not is_done[0]:
+    while not done_ref[0]:
         yield from event.wait()
         event.clear()
         while True:
@@ -81,7 +82,8 @@ def from_trio(async_fn: Callable[..., Any], *args: Any) -> Coro[_Return]:
                 break
             fn()
 
-    return result_holder[0].unwrap()
+    # We're unwrapping an `outcome.Outcome` object.
+    return cast(Any, outcome_ref[0]).unwrap()
 
 
 async def to_trio(coro: Coro[_Return], exception_group: None | bool = None) -> _Return:
