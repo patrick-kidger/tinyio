@@ -111,9 +111,7 @@ class Loop:
         wait_heap: list[_Wait] = []
         wake_loop = threading.Event()
         wake_loop.set()
-        current_coro_ref = [coro]
-        # Loop invariant: `len(current_coro_ref) == 1`. It's not really load-bearing, it's just used for making a nice
-        # traceback when we get an error.
+        current_coro = coro
         try:
             while True:
                 if len(queue) == 0:
@@ -147,12 +145,11 @@ class Loop:
                 else:
                     self._clear(wait_heap, wake_loop)
                 todo = queue.pop()
-                current_coro_ref[0] = todo.coro
+                current_coro = todo.coro
                 self._step(todo, queue, waiting_on, wait_heap, wake_loop)
                 yield
-            current_coro_ref[0] = coro
         except BaseException as e:
-            _cleanup(e, waiting_on, current_coro_ref, exception_group)
+            _cleanup(e, waiting_on, current_coro, exception_group)
             raise  # if not raising an `exception_group`
         out = self._results[coro]
         return out
@@ -444,13 +441,13 @@ def _strip_frames(e: BaseException, n: int):
 def _cleanup(
     base_e: BaseException,
     waiting_on: dict[Coro, list[_WaitingFor]],
-    current_coro_ref: list[Coro],
+    current_coro: Coro,
     exception_group: None | bool,
 ):
     # Oh no! Time to shut everything down. We can get here in two different ways:
     # - One of our coroutines raised an error internally (including being interrupted with a `KeyboardInterrupt`).
     # - An exogenous `KeyboardInterrupt` occurred whilst we were within the loop itself.
-    [current_coro] = current_coro_ref
+
     # First, stop all the coroutines.
     cancellation_errors: dict[Coro, BaseException] = {}
     other_errors: dict[Coro, BaseException] = {}
