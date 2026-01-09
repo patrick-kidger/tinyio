@@ -1,8 +1,11 @@
 import collections as co
+import contextlib
 import dataclasses
 import enum
 import graphlib
 import heapq
+import select
+import socket
 import threading
 import time
 import traceback
@@ -89,17 +92,20 @@ class Loop:
         if self._running:
             raise RuntimeError("Cannot call `tinyio.Loop().run` whilst the loop is currently running.")
         self._running = True
+        wake_loop = _WakeLoop()
+        wake_loop.set()
         try:
-            return (yield from self._runtime(coro, exception_group))
+            return (yield from self._runtime(coro, exception_group, wake_loop))
         except BaseException as e:
             _strip_frames(e, 1)
             raise
         finally:
+            wake_loop.close()
             assert self._running
             self._running = False
 
     def _runtime(
-        self, coro: Coro[_Return], exception_group: None | bool
+        self, coro: Coro[_Return], exception_group: None | bool, wake_loop: "_WakeLoop"
     ) -> Generator[None | Callable[[], None], None, _Return]:
         if coro in self._results.keys():
             return self._results[coro]
@@ -109,8 +115,6 @@ class Loop:
         waiting_on[coro] = []
         # Loop invariant: `{x.coro for x in queue}.issubset(set(waiting_on.keys()))`
         wait_heap: list[_Wait] = []
-        wake_loop = threading.Event()
-        wake_loop.set()
         current_coro = coro
         try:
             while True:
@@ -166,7 +170,7 @@ class Loop:
             coro.throw(RuntimeError("Cycle detected in `tinyio` loop. Cancelling all coroutines."))
 
     @staticmethod
-    def _clear(wait_heap: list["_Wait"], wake_loop: threading.Event):
+    def _clear(wait_heap: list["_Wait"], wake_loop: "_WakeLoop"):
         wake_loop.clear()
         while len(wait_heap) > 0:
             soonest = wait_heap[0]
@@ -185,7 +189,7 @@ class Loop:
         queue: co.deque["_Todo"],
         waiting_on: dict[Coro, list["_WaitingFor"]],
         wait_heap: list["_Wait"],
-        wake_loop: threading.Event,
+        wake_loop: "_WakeLoop",
     ) -> None:
         try:
             out = todo.coro.send(todo.value)
@@ -267,12 +271,46 @@ class _Todo:
 _global_event_lock = threading.RLock()
 
 
+class _WakeLoop:
+    """Like `threading.Event`, but works cross-process."""
+
+    def __init__(self):
+        # socketpair works with select on all platforms (including Windows)
+        self._read_sock, self._write_sock = socket.socketpair()
+        self._read_sock.setblocking(False)
+        self._write_sock.setblocking(False)
+
+    def set(self):
+        with _global_event_lock:
+            with contextlib.suppress(BlockingIOError):
+                self._write_sock.send(b"\x00")
+
+    def clear(self):
+        with _global_event_lock:
+            with contextlib.suppress(BlockingIOError):
+                while len(self._read_sock.recv(1024)) > 0:
+                    pass
+
+    def wait(self, timeout: None | int | float = None):
+        if timeout is None or timeout > 0:
+            select.select([self._read_sock], [], [], timeout)
+        # Don't consume the bytes here - let clear() do that
+
+    def close(self):
+        with _global_event_lock:
+            self._read_sock.close()
+            self._write_sock.close()
+
+    def get_write_fd(self):
+        return self._write_sock.fileno()
+
+
 @dataclasses.dataclass(frozen=False)
 class _WaitingFor:
     counter: int
     coro: Coro
     out: "_Wait | Coro | list[_Wait | Coro]"
-    wake_loop: threading.Event
+    wake_loop: _WakeLoop
     results: weakref.WeakKeyDictionary[Coro, Any]
     queue: co.deque[_Todo]
 
