@@ -1,4 +1,7 @@
+import os
 import pickle
+import signal
+import threading
 import time
 
 import pytest
@@ -368,3 +371,51 @@ def test_keyboard_interrupt_within_loop(exception_group, monkeypatch):
         keyboard = catcher.value
         assert type(keyboard) is KeyboardInterrupt
         assert _flat_tb(keyboard) == ["test_keyboard_interrupt_within_loop", "_f", "_g", "_invalid"]
+
+
+@pytest.mark.parametrize("exception_group", (None, False, True))
+def test_keyboard_interrupt_while_waiting(exception_group, monkeypatch):
+    """Tests an error occurring from within the loop itself while waiting for a thread."""
+
+    # This sends a keyboard interrupt signal to the main thread
+    # as soon as the main thread has started the loop.
+    ev = threading.Event()
+
+    def foo():
+        ev.wait()
+        os.kill(os.getpid(), signal.SIGINT)
+
+    t = threading.Thread(target=foo)
+    t.start()
+
+    # This simulates work in a blocking thread
+    did_cleanup = False
+
+    def _blocking_work():
+        nonlocal did_cleanup
+        try:
+            ev.set()
+            for _ in range(20):
+                time.sleep(0.1)
+        except tinyio.CancelledError:
+            did_cleanup = True
+            raise
+
+    # The tinyio entry point that will wait for the blocking work
+    def _f():
+        yield [tinyio.run_in_thread(_blocking_work)]
+
+    loop = tinyio.Loop()
+    with pytest.raises(BaseException) as catcher:
+        loop.run(_f(), exception_group)
+
+    t.join()
+
+    assert did_cleanup
+    if exception_group is True:
+        assert type(catcher.value) is BaseExceptionGroup
+        [keyboard] = catcher.value.exceptions
+        assert type(keyboard) is KeyboardInterrupt
+    elif exception_group is None:
+        keyboard = catcher.value
+        assert type(keyboard) is KeyboardInterrupt

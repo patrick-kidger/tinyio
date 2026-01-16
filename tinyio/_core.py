@@ -136,10 +136,7 @@ class Loop:
                                     timeout = soonest.timeout_in_seconds - time.monotonic()
                                     break
 
-                            def wait():
-                                wake_loop.wait(timeout=timeout)
-
-                            yield wait
+                            wake_loop.wait(timeout=timeout)
                             self._clear(wait_heap, wake_loop)
                             # These lines needs to be wrapped in a `len(queue)` check, as just because we've unblocked
                             # doesn't necessarily mean that we're ready to schedule a coroutine: we could have something
