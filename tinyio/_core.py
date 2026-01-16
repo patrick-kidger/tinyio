@@ -4,8 +4,6 @@ import dataclasses
 import enum
 import graphlib
 import heapq
-import select
-import socket
 import threading
 import time
 import traceback
@@ -14,6 +12,8 @@ import warnings
 import weakref
 from collections.abc import Callable, Generator
 from typing import Any, TypeAlias, TypeVar
+
+from ._utils import EventWithFileno, SimpleContextManager
 
 
 #
@@ -64,25 +64,23 @@ class Loop:
 
         The final `return` from `coro`.
         """
-        gen = self.runtime(coro, exception_group)
-        while True:
-            try:
-                wait = next(gen)
-            except StopIteration as e:
-                return e.value
-            except BaseException as e:
-                _strip_frames(e, 1)
-                raise
-            if wait is not None:
-                wait()
+        with self.runtime(coro, exception_group) as gen:
+            while True:
+                try:
+                    wait = next(gen)
+                except StopIteration as e:
+                    return e.value
+                if wait is not None:
+                    wait()
 
     def runtime(
         self, coro: Coro[_Return], exception_group: None | bool
-    ) -> Generator[None | Callable[[], None], None, _Return]:
+    ) -> contextlib.AbstractContextManager[Generator[None | Callable[[], None], None, _Return]]:
         """The generator for driving the event loop. This is low-level functionality that makes it possible to iterate
         the loop by just a single step at a time. This is typically useful for integrating with another event loop.
 
-        See `tinyio.Loop.run` for an example of how to iterate through this until completion.
+        See the source code for `tinyio.Loop.run`, or `tinyio.to_asyncio`, for an example of how to iterate through this
+        until completion.
 
         Yields `None` after each step to cede control, or a callable indicating the loop is blocked waiting for an event
         or timeout.
@@ -92,71 +90,72 @@ class Loop:
         if self._running:
             raise RuntimeError("Cannot call `tinyio.Loop().run` whilst the loop is currently running.")
         self._running = True
-        wake_loop = _WakeLoop()
+        wake_loop = EventWithFileno()
         wake_loop.set()
-        try:
-            return (yield from self._runtime(coro, exception_group, wake_loop))
-        except BaseException as e:
-            _strip_frames(e, 1)
-            raise
-        finally:
+        waiting_on = dict[Coro, list[_WaitingFor]]()
+        waiting_on[coro] = []
+        current_coro_ref = [coro]
+
+        enter = self._runtime(coro, waiting_on, current_coro_ref, wake_loop)
+
+        def exit(e: None | BaseException):
             wake_loop.close()
             assert self._running
             self._running = False
+            if e is not None:
+                _cleanup(e, waiting_on, current_coro_ref[0], exception_group)
+
+        return SimpleContextManager(enter, exit)
 
     def _runtime(
-        self, coro: Coro[_Return], exception_group: None | bool, wake_loop: "_WakeLoop"
+        self,
+        coro: Coro[_Return],
+        waiting_on: dict[Coro, list["_WaitingFor"]],
+        current_coro_ref: list[Coro],
+        wake_loop: EventWithFileno,
     ) -> Generator[None | Callable[[], None], None, _Return]:
         if coro in self._results.keys():
             return self._results[coro]
         queue: co.deque[_Todo] = co.deque()
         queue.appendleft(_Todo(coro, None))
-        waiting_on = dict[Coro, list[_WaitingFor]]()
-        waiting_on[coro] = []
         # Loop invariant: `{x.coro for x in queue}.issubset(set(waiting_on.keys()))`
         wait_heap: list[_Wait] = []
-        current_coro = coro
-        try:
-            while True:
-                if len(queue) == 0:
-                    if len(waiting_on) == 0:
-                        # We're done.
-                        break
-                    else:
-                        # We might have a cycle bug...
-                        self._check_cycle(waiting_on, coro)
-                        # ...but hopefully we're just waiting on a thread or exogeneous event to unblock one of our
-                        # coroutines.
-                        while len(queue) == 0:
-                            timeout = None
-                            while len(wait_heap) > 0:
-                                soonest = wait_heap[0]
-                                assert soonest.timeout_in_seconds is not None
-                                if soonest.state == _WaitState.DONE:
-                                    heapq.heappop(wait_heap)
-                                else:
-                                    timeout = soonest.timeout_in_seconds - time.monotonic()
-                                    break
-
-                            def wait():
-                                wake_loop.wait(timeout=timeout)
-
-                            yield wait
-                            self._clear(wait_heap, wake_loop)
-                            # These lines needs to be wrapped in a `len(queue)` check, as just because we've unblocked
-                            # doesn't necessarily mean that we're ready to schedule a coroutine: we could have something
-                            # like `yield [event1.wait(...), event2.wait(...)]`, and only one of the two has unblocked.
+        while True:
+            if len(queue) == 0:
+                if len(waiting_on) == 0:
+                    # We're done.
+                    break
                 else:
-                    self._clear(wait_heap, wake_loop)
-                todo = queue.pop()
-                current_coro = todo.coro
-                self._step(todo, queue, waiting_on, wait_heap, wake_loop)
-                yield
-        except BaseException as e:
-            _cleanup(e, waiting_on, current_coro, exception_group)
-            raise  # if not raising an `exception_group`
-        out = self._results[coro]
-        return out
+                    # We might have a cycle bug...
+                    self._check_cycle(waiting_on, coro)
+                    # ...but hopefully we're just waiting on a thread or exogeneous event to unblock one of our
+                    # coroutines.
+                    while len(queue) == 0:
+                        timeout = None
+                        while len(wait_heap) > 0:
+                            soonest = wait_heap[0]
+                            assert soonest.timeout_in_seconds is not None
+                            if soonest.state == _WaitState.DONE:
+                                heapq.heappop(wait_heap)
+                            else:
+                                timeout = soonest.timeout_in_seconds - time.monotonic()
+                                break
+
+                        def wait():
+                            wake_loop.wait(timeout=timeout)
+
+                        yield wait
+                        self._clear(wait_heap, wake_loop)
+                        # These lines needs to be wrapped in a `len(queue)` check, as just because we've unblocked
+                        # doesn't necessarily mean that we're ready to schedule a coroutine: we could have something
+                        # like `yield [event1.wait(...), event2.wait(...)]`, and only one of the two has unblocked.
+            else:
+                self._clear(wait_heap, wake_loop)
+            todo = queue.pop()
+            current_coro_ref[0] = todo.coro
+            self._step(todo, queue, waiting_on, wait_heap, wake_loop)
+            yield
+        return self._results[coro]
 
     @staticmethod
     def _check_cycle(waiting_on, coro):
@@ -170,7 +169,7 @@ class Loop:
             coro.throw(RuntimeError("Cycle detected in `tinyio` loop. Cancelling all coroutines."))
 
     @staticmethod
-    def _clear(wait_heap: list["_Wait"], wake_loop: "_WakeLoop"):
+    def _clear(wait_heap: list["_Wait"], wake_loop: EventWithFileno):
         wake_loop.clear()
         while len(wait_heap) > 0:
             soonest = wait_heap[0]
@@ -189,7 +188,7 @@ class Loop:
         queue: co.deque["_Todo"],
         waiting_on: dict[Coro, list["_WaitingFor"]],
         wait_heap: list["_Wait"],
-        wake_loop: "_WakeLoop",
+        wake_loop: EventWithFileno,
     ) -> None:
         try:
             out = todo.coro.send(todo.value)
@@ -271,46 +270,12 @@ class _Todo:
 _global_event_lock = threading.RLock()
 
 
-class _WakeLoop:
-    """Like `threading.Event`, but works cross-process."""
-
-    def __init__(self):
-        # socketpair works with select on all platforms (including Windows)
-        self._read_sock, self._write_sock = socket.socketpair()
-        self._read_sock.setblocking(False)
-        self._write_sock.setblocking(False)
-
-    def set(self):
-        with _global_event_lock:
-            with contextlib.suppress(BlockingIOError):
-                self._write_sock.send(b"\x00")
-
-    def clear(self):
-        with _global_event_lock:
-            with contextlib.suppress(BlockingIOError):
-                while len(self._read_sock.recv(1024)) > 0:
-                    pass
-
-    def wait(self, timeout: None | int | float = None):
-        if timeout is None or timeout > 0:
-            select.select([self._read_sock], [], [], timeout)
-        # Don't consume the bytes here - let clear() do that
-
-    def close(self):
-        with _global_event_lock:
-            self._read_sock.close()
-            self._write_sock.close()
-
-    def get_write_fd(self):
-        return self._write_sock.fileno()
-
-
 @dataclasses.dataclass(frozen=False)
 class _WaitingFor:
     counter: int
     coro: Coro
     out: "_Wait | Coro | list[_Wait | Coro]"
-    wake_loop: _WakeLoop
+    wake_loop: EventWithFileno
     results: weakref.WeakKeyDictionary[Coro, Any]
     queue: co.deque[_Todo]
 
@@ -532,11 +497,12 @@ def _cleanup(
     else:
         module_e = tb.tb_frame.f_globals.get("__name__", "")
     if not module_e.startswith("tinyio."):
-        # 2 skipped frames:
+        # 3 skipped frames:
+        # `self.run`
+        # `self._runtime`
         # `self._step`
-        # either `coro.throw(...)` or `todo.coro.send(todo.value)`
         # Don't skip them if the error was an internal error in tinyio, or a KeyboardInterrupt.
-        _strip_frames(base_e, 2)  # pyright: ignore[reportPossiblyUnboundVariable]
+        _strip_frames(base_e, 3)  # pyright: ignore[reportPossiblyUnboundVariable]
     # Next: bit of a heuristic, but it is pretty common to only have one thing waiting on you, so stitch together
     # their tracebacks as far as we can. Thinking about specifically `current_coro`:
     #

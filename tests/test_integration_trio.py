@@ -60,3 +60,24 @@ def test_tinyio_inside_trio():
         return out
 
     assert trio.run(f) == 9
+
+
+def test_other_trio_can_run():
+    event = tinyio.Event()
+
+    def _add_one(x: int) -> tinyio.Coro[int]:
+        yield event.wait()
+        return x + 1
+
+    async def g():
+        for _ in range(20):
+            await trio.sleep(0)
+        event.set()
+
+    async def f():
+        async with trio.open_nursery() as n:
+            n.start_soon(g)
+            n.start_soon(lambda: tinyio.to_trio(_add_one(1)))
+        return 5
+
+    assert trio.run(f) == 5

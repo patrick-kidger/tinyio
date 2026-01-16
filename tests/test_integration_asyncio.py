@@ -61,3 +61,22 @@ def test_tinyio_inside_asyncio():
         return out
 
     assert asyncio.run(f()) == 9
+
+
+def test_other_asyncio_can_run():
+    event = tinyio.Event()
+
+    def _add_one(x: int) -> tinyio.Coro[int]:
+        yield event.wait()
+        return x + 1
+
+    async def g():
+        for _ in range(20):
+            await asyncio.sleep(0)
+        event.set()
+
+    async def f():
+        await asyncio.gather(g(), tinyio.to_asyncio(_add_one(1)))
+        return 5
+
+    assert asyncio.run(f()) == 5
