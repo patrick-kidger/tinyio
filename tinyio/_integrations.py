@@ -31,16 +31,16 @@ async def to_asyncio(coro: Coro[_Return], exception_group: None | bool = None) -
     """Converts a `tinyio`-compatible coroutine into an `asyncio`-compatible coroutine."""
     import asyncio
 
-    gen = Loop().runtime(coro, exception_group)
-    while True:
-        try:
-            wait = next(gen)
-        except StopIteration as e:
-            return e.value
-        if wait is None:
-            await asyncio.sleep(0)
-        else:
-            await asyncio.get_running_loop().run_in_executor(None, wait)
+    with Loop().runtime(coro, exception_group) as gen:
+        while True:
+            try:
+                wait = next(gen)
+            except StopIteration as e:
+                return e.value
+            if wait is None:
+                await asyncio.sleep(0)
+            else:
+                await asyncio.get_running_loop().run_in_executor(None, wait)
 
 
 def from_trio(async_fn: Callable[..., Any], *args: Any) -> Coro[_Return]:
@@ -90,13 +90,13 @@ async def to_trio(coro: Coro[_Return], exception_group: None | bool = None) -> _
     """Converts a `tinyio`-compatible coroutine into a `trio`-compatible coroutine."""
     import trio  # pyright: ignore[reportMissingImports]
 
-    gen = Loop().runtime(coro, exception_group)
-    while True:
-        try:
-            wait = next(gen)
-        except StopIteration as e:
-            return e.value
-        if wait is None:
-            await trio.sleep(0)
-        else:
-            await trio.to_thread.run_sync(wait)
+    with Loop().runtime(coro, exception_group) as gen:
+        while True:
+            try:
+                wait = next(gen)
+            except StopIteration as e:
+                return e.value
+            if wait is None:
+                await trio.sleep(0)
+            else:
+                await trio.to_thread.run_sync(wait)
