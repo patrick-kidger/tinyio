@@ -76,8 +76,10 @@ def test_other_trio_can_run():
 
     async def f():
         async with trio.open_nursery() as n:
-            n.start_soon(g)
             n.start_soon(lambda: tinyio.to_trio(_add_one(1)))
+            for _ in range(20):
+                await trio.sleep(0)
+            n.start_soon(g)
         return 5
 
     assert trio.run(f) == 5
