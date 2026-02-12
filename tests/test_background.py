@@ -1,4 +1,3 @@
-import pytest
 import tinyio
 
 
@@ -11,8 +10,8 @@ def test_as_completed():
     def _run():
         iterator = yield tinyio.as_completed({_sleep(0.3), _sleep(0.1), _sleep(0.2)})
         outs = []
-        while not iterator.done():
-            x = yield iterator.get()
+        for x in iterator:
+            x = yield x
             outs.append(x)
         return outs
 
@@ -23,12 +22,7 @@ def test_as_completed():
 def test_as_completed_out_of_order():
     def _run():
         iterator = yield tinyio.as_completed({_sleep(0.3), _sleep(0.1), _sleep(0.2)})
-        get1 = iterator.get()
-        get2 = iterator.get()
-        get3 = iterator.get()
-        with pytest.raises(RuntimeError, match="which is greater than the number of coroutines"):
-            iterator.get()
-        assert iterator.done()
+        get1, get2, get3 = list(iterator)
         out3 = yield get3
         out2 = yield get2
         out1 = yield get1

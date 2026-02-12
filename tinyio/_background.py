@@ -1,5 +1,5 @@
-from collections.abc import Generator
-from typing import Generic, TypeVar
+from collections.abc import Generator, Iterable
+from typing import TypeVar
 
 from ._core import Coro, Event
 
@@ -7,10 +7,10 @@ from ._core import Coro, Event
 _T = TypeVar("_T")
 
 
-def as_completed(coros: set[Coro[_T]]) -> Coro["AsCompleted"]:
+def as_completed(coros: set[Coro[_T]]) -> Coro[Iterable[Coro[_T]]]:
     """Schedules multiple coroutines, iterating through their outputs in the order that they complete.
 
-    Usage is via `.done()` and `.get()` as follows:
+    Usage is as follows:
     ```python
     import tinyio
 
@@ -19,9 +19,8 @@ def as_completed(coros: set[Coro[_T]]) -> Coro["AsCompleted"]:
         return x
 
     def as_completed_demo():
-        iterator = yield tinyio.as_completed({sleep(7), sleep(2), sleep(4)})
-        while not iterator.done():
-            out = yield iterator.get()
+        for out in (yield tinyio.as_completed({sleep(7), sleep(2), sleep(4)})):
+            out = yield out
             print(f"As completed demo: {out}")
 
     loop = tinyio.Loop()
@@ -46,32 +45,44 @@ def as_completed(coros: set[Coro[_T]]) -> Coro["AsCompleted"]:
         put_count += 1
 
     yield {wrapper(coro) for coro in coros}
-    return AsCompleted(outs, events)
+    return as_completed_iterator(outs, events)
 
 
-class AsCompleted(Generic[_T]):
-    def __init__(self, outs: dict, events: list[Event]):
-        self._get_count = 0
-        self._outs = outs
-        self._events = events
+# We'd much rather implement this as just
+# ```python
+# def as_completed_iterator(outs, events):
+#     for i in range(len(events)):
+#         yield as_completed_i(i, outs, events)
+# ```
+# but we want to have `.done` and `.get` attributes to offer a nice deprecation message.
+class as_completed_iterator:
+    def __init__(self, outs, events):
+        self.outs = outs
+        self.events = events
 
-    def done(self) -> bool:
-        """Whether all coroutines are being waited on. This does not imply that all coroutines have necessarily
-        finished executing; it just implies that you should not call `.get()` any more times.
-        """
-        return self._get_count == len(self._events)
+    def __iter__(self):
+        for i in range(len(self.events)):
+            yield as_completed_i(i, self.outs, self.events)
 
-    def get(self) -> Coro[_T]:
-        """Yields the output of the next coroutine to complete."""
-        get_count = self._get_count
-        if self._get_count >= len(self._events):
-            raise RuntimeError(
-                f"Called `AsCompleted.get` {self._get_count + 1} times, which is greater than the number of coroutines "
-                f"which are being waited on ({len(self._events)})."
-            )
-        self._get_count += 1
-        return self._get(get_count)
+    def done(*args, **kwargs):
+        del args, kwargs
+        raise RuntimeError(_deprecated_0_4_0_msg)
 
-    def _get(self, get_count: int):
-        yield from self._events[get_count].wait()
-        return self._outs.pop(get_count)
+    def get(*args, **kwargs):
+        del args, kwargs
+        raise RuntimeError(_deprecated_0_4_0_msg)
+
+
+def as_completed_i(i, outs, events):
+    yield events[i].wait()
+    return outs[i]
+
+
+_deprecated_0_4_0_msg = (
+    "Calling `.get` or `.done` on `tinyio.as_completed` was deprecated in tinyio "
+    "v0.4.0. Please use the new syntax:\n"
+    "\n"
+    "    for out in (yield tinyio.as_completed({...})):\n"
+    "        out = yield out\n"
+    "        ...\n"
+)

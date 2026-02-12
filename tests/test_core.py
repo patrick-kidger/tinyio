@@ -271,8 +271,7 @@ def test_gc_simple():
 
     def _gc(x: int) -> tinyio.Coro[tuple[int, int]]:
         iterator = yield tinyio.as_completed({_foo(x), _add_one(x)})
-        y = yield iterator.get()
-        z = yield iterator.get()
+        y, z = yield list(iterator)
         return y, z
 
     loop = tinyio.Loop()
