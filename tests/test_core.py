@@ -107,14 +107,15 @@ def test_multi_run():
     assert loop.run(_mul()) == 25
 
 
-def test_waiting_on_already_finished():
+@pytest.mark.parametrize("background", (list, set))
+def test_waiting_on_already_finished(background):
     def f():
         yield
         return 3
 
     def g(coro):
         yield h(coro)
-        yield [f(), coro]
+        yield background([f(), coro])
 
     def h(coro):
         yield coro
