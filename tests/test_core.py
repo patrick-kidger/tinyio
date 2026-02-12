@@ -533,24 +533,26 @@ def test_run_finished_coroutine2():
     assert loop.run(ff) == 4
 
 
-@pytest.mark.parametrize("num_yields", (0, 1, 20))
-def test_reentrant(num_yields):
+def test_run_finished_coroutine3():
+    def f():
+        yield
+        return 4
+
+    ff = f()
+    assert tinyio.Loop().run(ff) == 4
+    with pytest.raises(ValueError, match="which is a generator that has already started"):
+        assert tinyio.Loop().run(ff)
+
+
+def test_reentrant():
     loop = tinyio.Loop()
 
     def f():
-        return (yield [gg, h()])
+        yield
+        loop.run(g())
 
     def g():
-        for _ in range(num_yields):
-            yield
-        return 4
-
-    gg = g()
-
-    def h():
         yield
-        out = loop.run(gg)
-        return out
 
     with pytest.raises(RuntimeError, match="whilst the loop is currently running"):
-        assert loop.run(f()) == [4, 4]
+        loop.run(f())

@@ -86,10 +86,26 @@ class Loop:
         Yields `None` after each step to cede control, or a callable indicating the loop is blocked waiting for an event
         or timeout.
         """
-        if not isinstance(coro, Generator):
-            raise ValueError("Invalid input `coro`, which is not a coroutine (a function using `yield` statements).")
         if self._running:
             raise RuntimeError("Cannot call `tinyio.Loop().run` whilst the loop is currently running.")
+        if not isinstance(coro, Generator):
+            raise ValueError(f"Invalid input {coro}, which is not a coroutine (a function using `yield` statements).")
+        # The provider generator must either be one that we've already seen...
+        try:
+            output = self._results[coro]
+        except KeyError:
+            pass
+        else:
+
+            def return_output():
+                if False:
+                    yield
+                return output
+
+            return SimpleContextManager(return_output(), lambda *a, **kw: None)
+        # ...or one that has not yet started executing.
+        if inspect.getgeneratorstate(coro) != inspect.GEN_CREATED:
+            raise ValueError(f"Invalid input {coro}, which is a generator that has already started.")
         self._running = True
         wake_loop = EventWithFileno()
         wake_loop.set()
@@ -115,8 +131,6 @@ class Loop:
         current_coro_ref: list[Coro],
         wake_loop: EventWithFileno,
     ) -> Generator[None | Callable[[], None], None, _Return]:
-        if coro in self._results.keys():
-            return self._results[coro]
         queue: co.deque[_Todo] = co.deque()
         queue.appendleft(_Todo(coro, None))
         # Loop invariant: `{x.coro for x in queue}.issubset(set(waiting_on.keys()))`
