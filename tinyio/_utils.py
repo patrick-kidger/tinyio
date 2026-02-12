@@ -2,6 +2,7 @@ import contextlib
 import select
 import socket
 import threading
+from typing import TypeVar
 
 
 # Not sure if this lock is really necessary, but it's easier to reason about this way.
@@ -56,3 +57,11 @@ class SimpleContextManager:
 
     def __exit__(self, exc_type, exc_value, exc_tb):
         self.exit(exc_value)
+
+
+_E = TypeVar("_E", bound=BaseException)
+
+
+def usage_error(e: _E) -> _E:
+    e.__tinyio_strip_frames__ = True  # pyright: ignore[reportAttributeAccessIssue]
+    return e

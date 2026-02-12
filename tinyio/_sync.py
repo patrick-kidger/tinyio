@@ -2,6 +2,7 @@ import collections as co
 import contextlib
 
 from ._core import Coro, Event
+from ._utils import usage_error
 
 
 class Semaphore:
@@ -22,7 +23,7 @@ class Semaphore:
         - `value`: the maximum number of concurrent accesses.
         """
         if value <= 0:
-            raise ValueError("`tinyio.Semaphore(value=...)` must be positive.")
+            raise usage_error(ValueError("`tinyio.Semaphore(value=...)` must be positive."))
         self._value = value
         self._events = co.deque[Event]()
 
@@ -43,7 +44,9 @@ class _CloseSemaphore:
 
     def __enter__(self):
         if self._cell[0]:
-            raise RuntimeError("Use a new `semaphore()` call in each `with (yield semaphore())`, do not re-use it.")
+            raise usage_error(
+                RuntimeError("Use a new `semaphore()` call in each `with (yield semaphore())`, do not re-use it.")
+            )
         self._cell[0] = True
 
     def __exit__(self, exc_type, exc_value, exc_tb):

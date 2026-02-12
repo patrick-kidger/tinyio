@@ -1,3 +1,4 @@
+import contextlib
 import os
 import pickle
 import signal
@@ -419,3 +420,146 @@ def test_keyboard_interrupt_while_waiting(exception_group):
     elif exception_group is None:
         keyboard = catcher.value
         assert type(keyboard) is KeyboardInterrupt
+
+
+def test_usage_error_loop_already_running():
+    def outer():
+        yield inner()
+
+    def inner():
+        # Try to run the loop again while it's already running
+        loop.run(dummy())
+        yield
+
+    def dummy():
+        yield
+
+    loop = tinyio.Loop()
+    with pytest.raises(RuntimeError) as catcher:
+        loop.run(outer())
+
+    assert str(catcher.value) == "Cannot call `tinyio.Loop().run` whilst the loop is currently running."
+    assert _flat_tb(catcher.value) == ["test_usage_error_loop_already_running", "outer", "inner", "run", "runtime"]
+
+
+def test_usage_error_not_a_coroutine():
+    def not_a_coro():
+        return 42
+
+    loop = tinyio.Loop()
+    with pytest.raises(ValueError) as catcher:
+        loop.run(not_a_coro)  # pyright: ignore[reportArgumentType]
+
+    assert "not a coroutine" in str(catcher.value)
+    assert _flat_tb(catcher.value) == ["test_usage_error_not_a_coroutine", "run", "runtime"]
+
+
+@pytest.mark.parametrize("num_yields", (0, 1, 2, 20))
+def test_usage_error_already_started_generator(num_yields):
+    def coro():
+        for _ in range(num_yields):
+            yield
+
+    gen = coro()
+    with contextlib.suppress(StopIteration) if num_yields == 0 else contextlib.nullcontext():
+        next(gen)  # Start the generator
+
+    loop = tinyio.Loop()
+    with pytest.raises(ValueError) as catcher:
+        loop.run(gen)
+
+    assert "generator that has already started" in str(catcher.value)
+    assert _flat_tb(catcher.value) == ["test_usage_error_already_started_generator", "run", "runtime"]
+
+
+def test_usage_error_event_bool():
+    def outer():
+        yield inner()
+
+    def inner():
+        event = tinyio.Event()
+        if event:  # pyright: ignore[reportGeneralTypeIssues]
+            pass
+        yield
+
+    loop = tinyio.Loop()
+    with pytest.raises(TypeError) as catcher:
+        loop.run(outer())
+
+    assert "Cannot convert `tinyio.Event` to boolean" in str(catcher.value)
+    assert "event.is_set()" in str(catcher.value)
+    assert _flat_tb(catcher.value) == ["test_usage_error_event_bool", "outer", "inner", "__bool__"]
+
+
+def test_usage_error_semaphore_non_positive():
+    def outer():
+        yield inner()
+
+    def inner():
+        tinyio.Semaphore(value=0)
+        yield
+
+    loop = tinyio.Loop()
+    with pytest.raises(ValueError) as catcher:
+        loop.run(outer())
+
+    assert "`tinyio.Semaphore(value=...)` must be positive" in str(catcher.value)
+    assert _flat_tb(catcher.value) == ["test_usage_error_semaphore_non_positive", "outer", "inner", "__init__"]
+
+
+def test_usage_error_semaphore_reuse():
+    def outer():
+        yield inner()
+
+    def inner():
+        semaphore = tinyio.Semaphore(value=1)
+        ctx = yield semaphore()
+        with ctx:
+            pass
+        # Try to reuse the same context manager
+        with ctx:
+            pass
+        yield
+
+    loop = tinyio.Loop()
+    with pytest.raises(RuntimeError) as catcher:
+        loop.run(outer())
+
+    assert "Use a new `semaphore()` call in each `with (yield semaphore())`" in str(catcher.value)
+    assert _flat_tb(catcher.value) == ["test_usage_error_semaphore_reuse", "outer", "inner", "__enter__"]
+
+
+@pytest.mark.parametrize("exception_group", (None, False, True))
+def test_usage_error_in_exception_group(exception_group):
+    def outer():
+        yield [valid(), invalid()]
+
+    def valid():
+        while True:
+            yield
+
+    def invalid():
+        yield
+        # This will raise a usage error
+        tinyio.Semaphore(value=-1)
+        yield
+
+    loop = tinyio.Loop()
+    with pytest.raises(BaseException) as catcher:
+        loop.run(outer(), exception_group)
+
+    if exception_group is True:
+        assert type(catcher.value) is BaseExceptionGroup
+        [value_error, cancelled] = catcher.value.exceptions
+        assert type(value_error) is ValueError
+        assert "`tinyio.Semaphore(value=...)` must be positive" in str(value_error)
+        # With exception_group, the traceback is stitched and cleaned up
+        # Ends at __init__ -> usage_error (tinyio code)
+        assert _flat_tb(value_error) == ["outer", "invalid", "__init__"]
+        assert type(cancelled) is tinyio.CancelledError
+    else:
+        value_error = catcher.value
+        assert type(value_error) is ValueError
+        assert "`tinyio.Semaphore(value=...)` must be positive" in str(value_error)
+        # Without exception_group, includes the test function name
+        assert _flat_tb(value_error) == ["test_usage_error_in_exception_group", "outer", "invalid", "__init__"]
