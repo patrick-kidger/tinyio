@@ -14,7 +14,7 @@ import weakref
 from collections.abc import Callable, Generator
 from typing import Any, TypeAlias, TypeVar
 
-from ._utils import EventWithFileno, SimpleContextManager
+from ._utils import EventWithFileno, SimpleContextManager, usage_error
 
 
 #
@@ -87,9 +87,11 @@ class Loop:
         or timeout.
         """
         if self._running:
-            raise RuntimeError("Cannot call `tinyio.Loop().run` whilst the loop is currently running.")
+            raise usage_error(RuntimeError("Cannot call `tinyio.Loop().run` whilst the loop is currently running."))
         if not isinstance(coro, Generator):
-            raise ValueError(f"Invalid input {coro}, which is not a coroutine (a function using `yield` statements).")
+            raise usage_error(
+                ValueError(f"Invalid input {coro}, which is not a coroutine (a function using `yield` statements).")
+            )
         # The provider generator must either be one that we've already seen...
         try:
             output = self._results[coro]
@@ -105,7 +107,7 @@ class Loop:
             return SimpleContextManager(return_output(), lambda *a, **kw: None)
         # ...or one that has not yet started executing.
         if inspect.getgeneratorstate(coro) != inspect.GEN_CREATED:
-            raise ValueError(f"Invalid input {coro}, which is a generator that has already started.")
+            raise usage_error(ValueError(f"Invalid input {coro}, which is a generator that has already started."))
         self._running = True
         wake_loop = EventWithFileno()
         wake_loop.set()
@@ -440,7 +442,7 @@ class Event:
         yield _Wait(self, timeout_in_seconds)
 
     def __bool__(self):
-        raise TypeError("Cannot convert `tinyio.Event` to boolean. Did you mean `event.is_set()`?")
+        raise usage_error(TypeError("Cannot convert `tinyio.Event` to boolean. Did you mean `event.is_set()`?"))
 
 
 #
@@ -511,7 +513,7 @@ def _cleanup(
         module_e = ""
     else:
         module_e = tb.tb_frame.f_globals.get("__name__", "")
-    if not module_e.startswith("tinyio."):
+    if not module_e.startswith("tinyio.") or getattr(base_e, "__tinyio_strip_frames__", False):
         # 3 skipped frames:
         # `self.run`
         # `self._runtime`
@@ -568,14 +570,16 @@ def _cleanup(
                 interesting_cancellation_errors.append(e)
             else:
                 other_cancellation_errors.append(e)
-        raise BaseExceptionGroup(
-            "An error occured running a `tinyio` loop.\nThe first exception below is the original error. Since it is "
-            "common for each coroutine to only have one other coroutine waiting on it, then we have stitched together "
-            "their tracebacks for as long as that is possible.\n"
-            "The other exceptions are all exceptions that occurred whilst stopping the other coroutines.\n"
-            "(For a debugger that allows for navigating within exception groups, try "
-            "`https://github.com/patrick-kidger/patdb`.)\n",
-            [base_e, *other_errors.values(), *interesting_cancellation_errors, *other_cancellation_errors],  # pyright: ignore[reportPossiblyUnboundVariable]
+        raise usage_error(
+            BaseExceptionGroup(
+                "An error occured running a `tinyio` loop.\nThe first exception below is the original error. Since it "
+                "is common for each coroutine to only have one other coroutine waiting on it, then we have stitched "
+                "together their tracebacks for as long as that is possible.\n"
+                "The other exceptions are all exceptions that occurred whilst stopping the other coroutines.\n"
+                "(For a debugger that allows for navigating within exception groups, try "
+                "`https://github.com/patrick-kidger/patdb`.)\n",
+                [base_e, *other_errors.values(), *interesting_cancellation_errors, *other_cancellation_errors],  # pyright: ignore[reportPossiblyUnboundVariable]
+            )
         )
     # else let the parent `raise` the original error.
 
