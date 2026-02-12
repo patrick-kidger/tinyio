@@ -72,7 +72,7 @@ def test_nest_with_error_in_inner_loop():
         q2.put(5)
         yield tinyio.sleep(1)
         g_was_cancelled = False
-        return 0
+        return 1
 
     def h() -> tinyio.Coro[int]:
         x = yield q1.get()
@@ -86,18 +86,24 @@ def test_nest_with_error_in_inner_loop():
         q1.put(5)
         yield tinyio.sleep(1)
         i_was_cancelled = False
-        return 0
+        return 2
 
     def nested() -> tinyio.Coro[list[int]]:
         return (yield [h(), i()])
 
-    def f() -> tinyio.Coro[list[int | list[int]]]:
-        return (yield [g(), tinyio.nest(nested())])
+    def try_nested() -> tinyio.Coro[list[int]]:
+        try:
+            return (yield from tinyio.nest(nested()))
+        except RuntimeError as e:
+            assert str(e) == "Kaboom"
+            return [-1, -1]
+        else:
+            assert False
 
-    try:
-        tinyio.Loop().run(f())
-    except RuntimeError:
-        pass
+    def f() -> tinyio.Coro[list[int]]:
+        return (yield [g(), try_nested()])
+
+    assert tinyio.Loop().run(f()) == [1, [-1, -1]]
 
     assert not g_was_cancelled
     assert i_was_cancelled
