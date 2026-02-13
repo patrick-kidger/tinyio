@@ -277,7 +277,7 @@ tinyio.from_asyncio       tinyio.from_trio
 
 ### Asynchronous context managers
 
-<details><summary>Click to expand></summary>
+<details><summary>Click to expand</summary>
 
 You can use the following pattern to implement context managers with asynchronous creation:
 
@@ -311,7 +311,7 @@ This isn't anything fancier than just using a coroutine that returns a regular `
 
 ### Asynchronous iterators
 
-<details><summary>Click to expand></summary>
+<details><summary>Click to expand</summary>
 
 You can use the following pattern to implement asychronous iterators:
 
