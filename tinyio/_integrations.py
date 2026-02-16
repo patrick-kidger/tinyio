@@ -100,22 +100,3 @@ async def to_trio(coro: Coro[_Return], exception_group: None | bool = None) -> _
                 await trio.sleep(0)
             else:
                 await trio.to_thread.run_sync(wait)
-
-
-def nest(coro: Coro[_Return], exception_group: None | bool = None) -> Coro[_Return]:
-    """Runs a coroutine in a separate "inner" loop.
-
-    In particular, this isolates coroutines running in the "outer" loop from exceptions
-    occurring from coroutines in the inner one, while still allowing corountines in both
-    loops to make progress simultaneously.
-    """
-    with Loop().runtime(coro, exception_group) as gen:
-        while True:
-            try:
-                wait = next(gen)
-            except StopIteration as e:
-                return e.value
-            if wait is None:
-                yield
-            else:
-                yield run_in_thread(wait)
