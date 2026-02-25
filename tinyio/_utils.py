@@ -10,7 +10,7 @@ _global_event_lock = threading.Lock()
 
 
 class EventWithFileno:
-    """Like `threading.Event`, but has a fileno and can thus be used across procsses."""
+    """Like `threading.Event`, but has a fileno and can thus be used across processes."""
 
     def __init__(self):
         # socketpair works with select on all platforms (including Windows)
