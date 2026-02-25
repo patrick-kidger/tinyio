@@ -308,7 +308,7 @@ class _WaitingFor:
 
     def decrement(self):
         # We need a lock here as this may be called simultaneously between our event loop and via `Event.set`.
-        # (Though `Event.set` has its only internal lock, that doesn't cover the event loop as well.)
+        # (Though `Event.set` has its own internal lock, that doesn't cover the event loop as well.)
         with _global_event_lock:
             assert self.counter > 0
             self.counter -= 1
@@ -354,7 +354,7 @@ class _Wait:
     # This is basically just a second `__init__` method. We're not really initialised until this has been called
     # precisely once as well. The reason we have two is that an end-user creates us during `Event.wait()`, and then we
     # need to register on the event loop.
-    def register(self, waiting_for: "_WaitingFor") -> None:
+    def register(self, waiting_for: _WaitingFor) -> None:
         with _global_event_lock:
             assert self.state is _WaitState.INITIALISED
             assert self._waiting_for is None
