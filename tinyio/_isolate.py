@@ -64,7 +64,11 @@ def _nest(coro: tinyio.Coro[_R], exception_group: None | bool = None) -> tinyio.
 
 
 def isolate(
-    fn: Callable[..., tinyio.Coro[_R]], cleanup: Callable[[BaseException], tinyio.Coro[_R]], /, *args: tinyio.Coro
+    fn: Callable[..., tinyio.Coro[_R]],
+    cleanup: Callable[[BaseException], tinyio.Coro[_R]],
+    /,
+    *args: tinyio.Coro,
+    exception_group: None | bool = None,
 ) -> tinyio.Coro[tuple[_R, bool]]:
     """Runs a coroutine in an isolated event loop, and if it fails then cleanup is ran.
 
@@ -84,7 +88,7 @@ def isolate(
     - the first element is either the result of `fn(*args)` or `cleanup(exception)`.
     - whether `fn(*args)` succeeded or failed.
     """
-    if args:
+    if len(args) > 0:
         olds, news = zip(*map(_dupe, args), strict=True)
     else:
         olds, news = [], []
@@ -93,7 +97,7 @@ def isolate(
         # This `yield from` is load bearing! We must not allow the tinyio event loop to
         # interpose itself between the exception arising out of `fn(*news)`, and the
         # current stack frame. Otherwise we would get a `CancelledError` here instead.
-        return (yield from _nest(fn(*news))), True
+        return (yield from _nest(fn(*news), exception_group=exception_group)), True
     except BaseException as e:
         return (yield cleanup(e)), False
 
@@ -101,7 +105,7 @@ def isolate(
 # Stand back, some typing hackery required.
 if TYPE_CHECKING:
 
-    def _fn_signature(*args: tinyio.Coro[_T]): ...
+    def _fn_signature(*args: tinyio.Coro[_T], exception_group: None | bool = None): ...
 
     def _make_isolate(
         fn: Callable[_P, Any],
