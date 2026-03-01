@@ -65,28 +65,25 @@ def _nest(coro: tinyio.Coro[_R], exception_group: None | bool = None) -> tinyio.
 
 def isolate(
     fn: Callable[..., tinyio.Coro[_R]],
-    cleanup: Callable[[BaseException], tinyio.Coro[_R]],
     /,
     *args: tinyio.Coro,
     exception_group: None | bool = None,
-) -> tinyio.Coro[tuple[_R, bool]]:
-    """Runs a coroutine in an isolated event loop, and if it fails then cleanup is ran.
+) -> tinyio.Coro[tuple[_R | BaseException, bool]]:
+    """Runs a coroutine in an isolated event loop, and if it fails, returns the exception that occurred.
 
     **Arguments:**
 
     - `fn`: a function that returns a tinyio coroutine. Will be called as `fn(*args)` in order to get the coroutine to
         run. All coroutines that it depends on must be passed as `*args` (so that communication can be established
         between the two loops).
-    - `cleanup`: if `fn(*args)` raises an error, then `cleanup(exception)` should provide a coroutine that can be called
-        to clean things up.
     - `*args`: all coroutines that `fn` depends upon.
 
     **Returns:**
 
     A 2-tuple:
 
-    - the first element is either the result of `fn(*args)` or `cleanup(exception)`.
-    - whether `fn(*args)` succeeded or failed.
+    - the first element is either the result of `fn(*args)` or an exception.
+    - whether `fn(*args)` succeeded or raised an exception.
     """
     if len(args) > 0:
         olds, news = zip(*map(_dupe, args), strict=True)
@@ -99,7 +96,7 @@ def isolate(
         # current stack frame. Otherwise we would get a `CancelledError` here instead.
         return (yield from _nest(fn(*news), exception_group=exception_group)), True
     except BaseException as e:
-        return (yield cleanup(e)), False
+        return e, False
 
 
 # Stand back, some typing hackery required.
@@ -110,8 +107,8 @@ if TYPE_CHECKING:
     def _make_isolate(
         fn: Callable[_P, Any],
     ) -> Callable[
-        Concatenate[Callable[_P, tinyio.Coro[_R]], Callable[[BaseException], tinyio.Coro[_R]], _P],
-        tinyio.Coro[tuple[_R, bool]],
+        Concatenate[Callable[_P, tinyio.Coro[_R]], _P],
+        tinyio.Coro[tuple[_R | BaseException, bool]],
     ]: ...
 
     isolate = _make_isolate(_fn_signature)

@@ -48,13 +48,8 @@ def test_isolate(isolate_g: bool, isolate_h: bool):
         return x
 
     def maybe_isolate(c: Callable[[], tinyio.Coro[int]], isolate: bool) -> tinyio.Coro[int]:
-        def cleanup(e: BaseException) -> tinyio.Coro[int]:
-            del e
-            yield
-            return 999
-
         if isolate:
-            x, _ = yield tinyio.isolate(c, cleanup)
+            x, _ = yield tinyio.isolate(c)
             return x
         else:
             return (yield c())
@@ -103,12 +98,10 @@ def test_isolate_with_error_in_inner_loop():
         return (yield [h(), i()])
 
     def try_isolated() -> tinyio.Coro[list[int]]:
-        def cleanup(e: BaseException) -> tinyio.Coro[list[int]]:
-            assert str(e) == "Kaboom"
-            yield
-            return [-1, -1]
+        x, success = yield tinyio.isolate(isolated)
+        if not success:
+            x = [-1, -1]
 
-        x, _ = yield tinyio.isolate(isolated, cleanup)
         q3.put(0)  # wake up the "outer" loop g()
         return x
 
@@ -137,16 +130,15 @@ def test_isolate_with_args():
             z = yield slow_add_one(y)
             return z
 
-    def cleanup(e: BaseException) -> tinyio.Coro[int]:
-        del e
-        yield
-        return 999
-
-    def try_add_three(x: int) -> tinyio.Coro[int]:
-        return (yield tinyio.isolate(unreliable_add_two, cleanup, slow_add_one(x)))
+    def try_add_three(x: int) -> tinyio.Coro[tuple[int, bool]]:
+        return (yield tinyio.isolate(unreliable_add_two, slow_add_one(x)))
 
     assert tinyio.Loop().run(try_add_three(0)) == (3, True)
     assert tinyio.Loop().run(try_add_three(1)) == (4, True)
-    assert tinyio.Loop().run(try_add_three(2)) == (999, False)
     assert tinyio.Loop().run(try_add_three(3)) == (6, True)
     assert tinyio.Loop().run(try_add_three(4)) == (7, True)
+
+    result, success = tinyio.Loop().run(try_add_three(2))
+    assert not success
+    assert type(result) is RuntimeError
+    assert str(result) == "That is too hard."
