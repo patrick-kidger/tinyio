@@ -13,7 +13,7 @@ def test_trio_inside_tinyio_basic():
         z = await add_one(y)
         return z
 
-    out = tinyio.Loop().run(tinyio.from_trio(f, 3))
+    out = tinyio.Loop().run(tinyio.from_trio(f(3)))
     assert out == 5
 
 
@@ -33,7 +33,7 @@ def test_trio_inside_tinyio_complex():
         return x + 10
 
     def h(x):
-        ff = tinyio.from_trio(f, 3)
+        ff = tinyio.from_trio(f(3))
         a, b = yield [ff, g(x)]
         a2 = yield ff
         return a + a2 + b
@@ -109,7 +109,7 @@ def test_trio_inside_tinyio_error_in_nested():
 
     def main() -> tinyio.Coro[None]:
         yield {background()}
-        yield tinyio.from_trio(failing_trio)
+        yield tinyio.from_trio(failing_trio())
 
     with pytest.raises(_TestError, match="trio error"):
         tinyio.Loop().run(main())
@@ -134,7 +134,7 @@ def test_trio_inside_tinyio_error_in_main():
         raise _TestError("tinyio error")
 
     def main() -> tinyio.Coro[None]:
-        yield [tinyio.from_trio(slow_trio), failing_tinyio()]
+        yield [tinyio.from_trio(slow_trio()), failing_tinyio()]
 
     with pytest.raises(_TestError, match="tinyio error"):
         tinyio.Loop().run(main())
