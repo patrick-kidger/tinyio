@@ -1,5 +1,6 @@
 import asyncio
 
+import pytest
 import tinyio
 
 
@@ -80,3 +81,106 @@ def test_other_asyncio_can_run():
         return 5
 
     assert asyncio.run(f()) == 5
+
+
+# Error propagation tests
+
+
+class _TestError(Exception):
+    pass
+
+
+def test_asyncio_inside_tinyio_error_in_nested():
+    event = asyncio.Event()
+
+    def background():
+        yield
+        event.set()
+        while True:
+            yield
+
+    async def failing_asyncio():
+        await asyncio.sleep(0.00001)
+        await event.wait()
+        raise _TestError("asyncio error")
+
+    def main() -> tinyio.Coro[None]:
+        yield {background()}
+        yield tinyio.from_asyncio(failing_asyncio())
+
+    with pytest.raises(_TestError, match="asyncio error"):
+        tinyio.Loop().run(main())
+
+
+def test_asyncio_inside_tinyio_error_in_main():
+    asyncio_done = False
+    event = tinyio.Event()
+
+    async def slow_asyncio():
+        nonlocal asyncio_done
+        try:
+            event.set()
+            while True:
+                await asyncio.sleep(0.001)
+        except BaseException:
+            asyncio_done = True
+            raise
+
+    def failing_tinyio() -> tinyio.Coro[None]:
+        yield event.wait()
+        raise _TestError("tinyio error")
+
+    def main() -> tinyio.Coro[None]:
+        yield [tinyio.from_asyncio(slow_asyncio()), failing_tinyio()]
+
+    with pytest.raises(_TestError, match="tinyio error"):
+        tinyio.Loop().run(main())
+    assert asyncio_done
+
+
+def test_tinyio_inside_asyncio_error_in_nested():
+    def failing_tinyio() -> tinyio.Coro[None]:
+        for _ in range(5):
+            yield
+        raise _TestError("tinyio error")
+
+    async def main():
+        await tinyio.to_asyncio(failing_tinyio())
+
+    with pytest.raises(_TestError, match="tinyio error"):
+        asyncio.run(main())
+
+
+def test_tinyio_inside_asyncio_error_in_main():
+    tinyio_done = False
+    event = asyncio.Event()
+
+    def slow_tinyio():
+        nonlocal tinyio_done
+        try:
+            event.set()
+            while True:
+                yield tinyio.sleep(0.001)
+        except BaseException:
+            tinyio_done = True
+            raise
+
+    async def run_tinyio():
+        await tinyio.to_asyncio(slow_tinyio())
+
+    async def failing_asyncio():
+        await asyncio.sleep(0.001)
+        await event.wait()
+        raise _TestError("asyncio error")
+
+    async def main():
+        async with asyncio.TaskGroup() as tg:
+            tg.create_task(run_tinyio())
+            tg.create_task(failing_asyncio())
+
+    with pytest.raises(ExceptionGroup) as catcher:
+        asyncio.run(main())
+    [test_error] = catcher.value.exceptions
+    assert type(test_error) is _TestError
+    assert str(test_error) == "asyncio error"
+    assert tinyio_done
