@@ -162,6 +162,46 @@ def test_cancelling_coroutines_not_affecting_current_error(exception_group):
 
 
 @pytest.mark.parametrize("exception_group", (None, False, True))
+def test_catch_cancelled_raise_new_cancelled(exception_group):
+    ready = tinyio.Event()
+
+    def f():
+        yield [g(), h()]
+
+    def g():
+        yield i()
+
+    def h():
+        try:
+            ready.set()
+            while True:
+                yield tinyio.sleep(1)
+        except tinyio.CancelledError:
+            raise tinyio.CancelledError("new cancellation")
+
+    def i():
+        yield ready.wait()
+        raise RuntimeError("kapow")
+
+    loop = tinyio.Loop()
+    with pytest.raises(BaseException) as catcher:
+        loop.run(f(), exception_group)
+    if exception_group is True:
+        assert type(catcher.value) is BaseExceptionGroup
+        [a, b, c] = catcher.value.exceptions
+        assert type(a) is RuntimeError
+        assert str(a) == "kapow"
+        assert _flat_tb(a) == ["f", "g", "i"]
+        assert type(b) is tinyio.CancelledError
+        assert type(c) is tinyio.CancelledError
+        assert {tuple(_flat_tb(b)), tuple(_flat_tb(c))} == {("h",), ("sleep", "wait")}
+    else:
+        assert type(catcher.value) is RuntimeError
+        assert str(catcher.value) == "kapow"
+        assert _flat_tb(catcher.value) == ["test_catch_cancelled_raise_new_cancelled", "f", "g", "i"]
+
+
+@pytest.mark.parametrize("exception_group", (None, False, True))
 def test_invalid_yield(exception_group):
     def f():
         yield g()
