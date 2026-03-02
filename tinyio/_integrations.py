@@ -1,3 +1,4 @@
+import contextlib
 import queue
 from collections.abc import Callable, Coroutine
 from typing import Any, TypeVar, cast
@@ -22,7 +23,16 @@ def from_asyncio(coro: Coroutine[Any, Any, _Return]) -> Coro[_Return]:
     def run():
         import asyncio
 
-        return asyncio.new_event_loop().run_until_complete(coro)
+        loop = asyncio.new_event_loop()
+        try:
+            return loop.run_until_complete(coro)
+        except BaseException:
+            for task in asyncio.all_tasks(loop):
+                task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    loop.run_until_complete(task)
+            loop.run_until_complete(loop.shutdown_asyncgens())
+            raise
 
     return (yield run_in_thread(run))
 
