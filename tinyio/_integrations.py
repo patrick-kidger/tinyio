@@ -52,8 +52,9 @@ def from_trio(async_fn: Callable[..., Any], *args: Any) -> Coro[_Return]:
 
     callback_queue: queue.Queue[Callable[[], Any]] = queue.Queue()
     event = Event()
-    outcome_ref = [None]
+    outcome_ref: list[Any] = [None]
     done_ref = [False]
+    cancel_scope_ref: list[Any] = [None]
 
     # I think this should be threadsafe as-is without any extra threading locks etc. necessary.
     def run_sync_soon_threadsafe(fn: Callable[[], Any]) -> None:
@@ -65,22 +66,40 @@ def from_trio(async_fn: Callable[..., Any], *args: Any) -> Coro[_Return]:
         done_ref[0] = True
         event.set()
 
+    async def _wrapper():
+        with trio.CancelScope() as cancel_scope:
+            cancel_scope_ref[0] = cancel_scope
+            return await async_fn(*args)
+
     trio.lowlevel.start_guest_run(
-        async_fn,
-        *args,
+        _wrapper,
         run_sync_soon_threadsafe=run_sync_soon_threadsafe,
         done_callback=done_callback,
     )
 
-    while not done_ref[0]:
-        yield from event.wait()
-        event.clear()
+    def _drain_callbacks() -> None:
         while True:
             try:
                 fn = callback_queue.get_nowait()
             except queue.Empty:
                 break
             fn()
+
+    try:
+        while not done_ref[0]:
+            yield event.wait()
+            event.clear()
+            _drain_callbacks()
+    except BaseException:
+        # An external cancellation (e.g. tinyio.CancelledError) has been thrown into us.
+        # Cancel the trio guest run and drain until it finishes.
+        cancel_scope = cancel_scope_ref[0]
+        if cancel_scope is not None:
+            cancel_scope.cancel()
+        # We still need to process remaining trio callbacks until the guest run is done.
+        while not done_ref[0]:
+            _drain_callbacks()
+        raise
 
     # We're unwrapping an `outcome.Outcome` object.
     return cast(Any, outcome_ref[0]).unwrap()
