@@ -640,6 +640,38 @@ def test_usage_error_semaphore_reuse():
 
 
 @pytest.mark.parametrize("exception_group", (None, False, True))
+@pytest.mark.parametrize("finished", (False, True), ids=("started", "finished"))
+def test_yield_already_started_or_finished_generator(exception_group, finished):
+    def outer():
+        yield inner()
+
+    def inner():
+        def child():
+            yield
+
+        gen = child()
+        next(gen)  # Start the generator
+        if finished:
+            with pytest.raises(StopIteration):
+                next(gen)  # Exhaust the generator
+        yield gen
+
+    loop = tinyio.Loop()
+    with pytest.raises(BaseException) as catcher:
+        loop.run(outer(), exception_group)
+    if exception_group is True:
+        assert type(catcher.value) is BaseExceptionGroup
+        [cancel] = catcher.value.exceptions
+        assert _flat_tb(catcher.value) == ["test_yield_already_started_or_finished_generator"]
+        assert _flat_tb(cancel) == ["outer", "inner"]
+    else:
+        cancel = catcher.value
+        assert _flat_tb(cancel) == ["test_yield_already_started_or_finished_generator", "outer", "inner"]
+    assert type(cancel) is tinyio.CancelledError
+    assert "has already started" in str(cancel)
+
+
+@pytest.mark.parametrize("exception_group", (None, False, True))
 def test_usage_error_in_exception_group(exception_group):
     def outer():
         yield [valid(), invalid()]
