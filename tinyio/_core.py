@@ -12,9 +12,9 @@ import types
 import warnings
 import weakref
 from collections.abc import Callable, Generator
-from typing import Any, TypeAlias, TypeVar
+from typing import Any, NoReturn, TypeAlias, TypeVar
 
-from ._utils import EventWithFileno, SimpleContextManager, usage_error
+from ._utils import EventWithFileno, SimpleContextManager, filter_traceback
 
 
 #
@@ -65,14 +65,19 @@ class Loop:
 
         The final `return` from `coro`.
         """
-        with self.runtime(coro, exception_group) as gen:
-            while True:
-                try:
-                    wait = next(gen)
-                except StopIteration as e:
-                    return e.value
-                if wait is not None:
-                    wait()
+        __tracebackhide__ = True
+        try:
+            with self.runtime(coro, exception_group) as gen:
+                while True:
+                    try:
+                        wait = next(gen)
+                    except StopIteration as e:
+                        return e.value
+                    if wait is not None:
+                        wait()
+        except BaseException as e:
+            filter_traceback(e)
+            raise
 
     def runtime(
         self, coro: Coro[_Return], exception_group: None | bool
@@ -86,12 +91,11 @@ class Loop:
         Yields `None` after each step to cede control, or a callable indicating the loop is blocked waiting for an event
         or timeout.
         """
+        __tracebackhide__ = True
         if self._running:
-            raise usage_error(RuntimeError("Cannot call `tinyio.Loop().run` whilst the loop is currently running."))
+            raise RuntimeError("Cannot call `tinyio.Loop().run` whilst the loop is currently running.")
         if not isinstance(coro, Generator):
-            raise usage_error(
-                ValueError(f"Invalid input {coro}, which is not a coroutine (a function using `yield` statements).")
-            )
+            raise ValueError(f"Invalid input {coro}, which is not a coroutine (a function using `yield` statements).")
         # The provider generator must either be one that we've already seen...
         try:
             output = self._results[coro]
@@ -107,7 +111,7 @@ class Loop:
             return SimpleContextManager(return_output(), lambda *a, **kw: None)
         # ...or one that has not yet started executing.
         if inspect.getgeneratorstate(coro) != inspect.GEN_CREATED:
-            raise usage_error(ValueError(f"Invalid input {coro}, which is a generator that has already started."))
+            raise ValueError(f"Invalid input {coro}, which is a generator that has already started.")
         self._running = True
         wake_loop = EventWithFileno()
         wake_loop.set()
@@ -118,6 +122,7 @@ class Loop:
         enter = self._runtime(coro, waiting_on, current_coro_ref, wake_loop)
 
         def exit(e: None | BaseException):
+            __tracebackhide__ = True
             wake_loop.close()
             assert self._running
             self._running = False
@@ -133,6 +138,7 @@ class Loop:
         current_coro_ref: list[Coro],
         wake_loop: EventWithFileno,
     ) -> Generator[None | Callable[[], None], None, _Return]:
+        __tracebackhide__ = True
         queue: co.deque[_Todo] = co.deque()
         queue.appendleft(_Todo(coro, None))
         # Loop invariant: `{x.coro for x in queue}.issubset(set(waiting_on.keys()))`
@@ -176,6 +182,7 @@ class Loop:
 
     @staticmethod
     def _check_cycle(waiting_on, coro):
+        __tracebackhide__ = True
         sorter = graphlib.TopologicalSorter()
         for k, v in waiting_on.items():
             for vi in v:
@@ -183,7 +190,11 @@ class Loop:
         try:
             sorter.prepare()
         except graphlib.CycleError:
-            coro.throw(RuntimeError("Cycle detected in `tinyio` loop. Cancelling all coroutines."))
+            should_raise = True
+        else:
+            should_raise = False
+        if should_raise:
+            _throw(coro, "Cycle detected in `tinyio` loop. Cancelling all coroutines.")
 
     @staticmethod
     def _clear(wait_heap: list["_Wait"], wake_loop: EventWithFileno):
@@ -207,6 +218,7 @@ class Loop:
         wait_heap: list["_Wait"],
         wake_loop: EventWithFileno,
     ) -> None:
+        __tracebackhide__ = True
         try:
             out = todo.coro.send(todo.value)
         except StopIteration as e:
@@ -228,13 +240,12 @@ class Loop:
                     for out_i in out:
                         if isinstance(out_i, Generator):
                             if out_i not in self._results.keys() and out_i not in waiting_on.keys():
-                                if inspect.getgeneratorstate(out_i) != inspect.GEN_CREATED:
-                                    todo.coro.throw(_already_started(out_i))
+                                _check_not_started(todo.coro, out_i)
                                 queue.appendleft(_Todo(out_i, None))
                                 waiting_on[out_i] = []
                         else:
                             assert not isinstance(out_i, _Wait)
-                            todo.coro.throw(_invalid(original_out))
+                            _invalid(todo.coro, original_out)
                     queue.appendleft(_Todo(todo.coro, None))
                 case list():
                     waiting_for = _WaitingFor(len(out), todo.coro, original_out, wake_loop, self._results, queue)
@@ -245,8 +256,7 @@ class Loop:
                             elif out_i in waiting_on.keys():
                                 waiting_on[out_i].append(waiting_for)
                             else:
-                                if inspect.getgeneratorstate(out_i) != inspect.GEN_CREATED:
-                                    todo.coro.throw(_already_started(out_i))
+                                _check_not_started(todo.coro, out_i)
                                 queue.appendleft(_Todo(out_i, None))
                                 waiting_on[out_i] = [waiting_for]
                         elif isinstance(out_i, _Wait):
@@ -254,9 +264,9 @@ class Loop:
                             if out_i.timeout_in_seconds is not None:
                                 heapq.heappush(wait_heap, out_i)
                         else:
-                            todo.coro.throw(_invalid(original_out))
+                            _invalid(todo.coro, original_out)
                 case _:
-                    todo.coro.throw(_invalid(original_out))
+                    _invalid(todo.coro, original_out)
 
 
 class CancelledError(BaseException):
@@ -291,7 +301,7 @@ _global_event_lock = threading.RLock()
 class _WaitingFor:
     counter: int
     coro: Coro
-    out: "_Wait | Coro | list[_Wait | Coro]"
+    out: "None | _Wait | Coro | list[_Wait | Coro]"
     wake_loop: EventWithFileno
     results: weakref.WeakKeyDictionary[Coro, Any]
     queue: co.deque[_Todo]
@@ -442,7 +452,7 @@ class Event:
         yield _Wait(self, timeout_in_seconds)
 
     def __bool__(self):
-        raise usage_error(TypeError("Cannot convert `tinyio.Event` to boolean. Did you mean `event.is_set()`?"))
+        raise TypeError("Cannot convert `tinyio.Event` to boolean. Did you mean `event.is_set()`?")
 
 
 #
@@ -450,12 +460,65 @@ class Event:
 #
 
 
-def _strip_frames(e: BaseException, n: int):
-    tb = e.__traceback__
-    for _ in range(n):
-        if tb is not None:
-            tb = tb.tb_next
-    return e.with_traceback(tb)
+def _cancel(coro: Coro, msg: None | str) -> None | CancelledError | BaseException:
+    __tracebackhide__ = True  # `coro.throw` adds this frame
+    try:
+        out = coro.throw(CancelledError if msg is None else CancelledError(msg))
+    except CancelledError as e:
+        return e
+    except StopIteration as e:
+        what_did = f"returned `{e.value}`."
+        error = None
+    except BaseException as e:
+        if getattr(e, "__tinyio_no_warn__", False):
+            return e
+        details = "".join(traceback.format_exception_only(e)).strip()
+        what_did = f"raised the exception `{details}`."
+        error = e
+    else:
+        what_did = f"yielded `{out}`."
+        error = None
+    warnings.warn(
+        f"Coroutine `{coro}` did not respond properly to cancellation on receiving a "
+        "`tinyio.CancelledError`, and so a resource leak may have occurred. The coroutine is expected to "
+        "propagate the `tinyio.CancelledError` to indicate success in cleaning up resources. Instead, the "
+        f"coroutine {what_did}\n",
+        category=RuntimeWarning,
+        stacklevel=3,
+    )
+    return error
+
+
+def _throw(coro: Coro, msg: str) -> NoReturn:
+    __tracebackhide__ = True
+    error = _cancel(coro, msg)
+    if isinstance(error, CancelledError):
+        raise error
+    else:
+        # `error` might be either `None` or an error.
+        raise CancelledError(msg) from error
+
+
+def _invalid(coro: Coro, value: Any) -> NoReturn:
+    __tracebackhide__ = True
+    msg = f"Invalid yield {value}. Must be either `None`, a coroutine, or a list/set of coroutines."
+    if type(value) is tuple:
+        # We could support this but I find the `[]` visually distinctive.
+        msg += (
+            " In particular to wait on multiple coroutines (a 'gather'), then the syntax is `yield [foo, bar]`, "
+            "not `yield foo, bar`."
+        )
+    _throw(coro, msg)
+
+
+def _check_not_started(coro: Coro, value: Coro) -> None | NoReturn:
+    __tracebackhide__ = True
+    if inspect.getgeneratorstate(value) != inspect.GEN_CREATED:
+        msg = (
+            f"The coroutine `{value}` has already started. However it has not been seen by the `tinyio` loop before "
+            "and as such does not have any result associated with it."
+        )
+        _throw(coro, msg)
 
 
 def _cleanup(
@@ -464,6 +527,7 @@ def _cleanup(
     current_coro: Coro,
     exception_group: None | bool,
 ):
+    __tracebackhide__ = True
     # Oh no! Time to shut everything down. We can get here in two different ways:
     # - One of our coroutines raised an error internally (including being interrupted with a `KeyboardInterrupt`).
     # - An exogenous `KeyboardInterrupt` occurred whilst we were within the loop itself.
@@ -477,49 +541,17 @@ def _cleanup(
         # few cases), so it has already been shut down. However it may also be the case that there was an exogenous
         # `KeyboardInterrupt` whilst within the tinyio loop itself, in which case we do need to shut this one down
         # as well.
-        try:
-            out = coro.throw(CancelledError)
-        except CancelledError as e:
-            # Skipped frame is the `coro.throw` above.
-            cancellation_errors[coro] = _strip_frames(e, 1)
-            continue
-        except StopIteration as e:
-            what_did = f"returned `{e.value}`."
-        except BaseException as e:
-            # Skipped frame is the `coro.throw` above.
-            other_errors[coro] = _strip_frames(e, 1)
-            if getattr(e, "__tinyio_no_warn__", False):
-                continue
-            details = "".join(traceback.format_exception_only(e)).strip()
-            what_did = f"raised the exception `{details}`."
+        error = _cancel(coro, None)
+        if error is None:
+            pass
+        elif isinstance(error, CancelledError):
+            filter_traceback(error)
+            cancellation_errors[coro] = error
+        elif isinstance(error, BaseException):
+            filter_traceback(error)
+            other_errors[coro] = error
         else:
-            what_did = f"yielded `{out}`."
-        warnings.warn(
-            f"Coroutine `{coro}` did not respond properly to cancellation on receiving a "
-            "`tinyio.CancelledError`, and so a resource leak may have occurred. The coroutine is expected to "
-            "propagate the `tinyio.CancelledError` to indicate success in cleaning up resources. Instead, the "
-            f"coroutine {what_did}\n",
-            category=RuntimeWarning,
-            stacklevel=3,
-        )
-    tb = base_e.__traceback__
-    while tb is not None:
-        tb_next = tb.tb_next
-        if tb_next is None:
-            break
-        else:
-            tb = tb_next
-    if tb is None:
-        module_e = ""
-    else:
-        module_e = tb.tb_frame.f_globals.get("__name__", "")
-    if not module_e.startswith("tinyio.") or getattr(base_e, "__tinyio_strip_frames__", False):
-        # 3 skipped frames:
-        # `self.run`
-        # `self._runtime`
-        # `self._step`
-        # Don't skip them if the error was an internal error in tinyio, or a KeyboardInterrupt.
-        _strip_frames(base_e, 3)  # pyright: ignore[reportPossiblyUnboundVariable]
+            assert False
     # Next: bit of a heuristic, but it is pretty common to only have one thing waiting on you, so stitch together
     # their tracebacks as far as we can. Thinking about specifically `current_coro`:
     #
@@ -553,6 +585,7 @@ def _cleanup(
         [waiting_for] = waiting_on[coro]
         coro = waiting_for.coro
     base_e.with_traceback(tb)  # pyright: ignore[reportPossiblyUnboundVariable]
+    filter_traceback(base_e)
     if exception_group is None:
         exception_group = len(other_errors) > 0
         cancellation_errors.clear()
@@ -570,33 +603,13 @@ def _cleanup(
                 interesting_cancellation_errors.append(e)
             else:
                 other_cancellation_errors.append(e)
-        raise usage_error(
-            BaseExceptionGroup(
-                "An error occured running a `tinyio` loop.\nThe first exception below is the original error. Since it "
-                "is common for each coroutine to only have one other coroutine waiting on it, then we have stitched "
-                "together their tracebacks for as long as that is possible.\n"
-                "The other exceptions are all exceptions that occurred whilst stopping the other coroutines.\n"
-                "(For a debugger that allows for navigating within exception groups, try "
-                "`https://github.com/patrick-kidger/patdb`.)\n",
-                [base_e, *other_errors.values(), *interesting_cancellation_errors, *other_cancellation_errors],  # pyright: ignore[reportPossiblyUnboundVariable]
-            )
+        raise BaseExceptionGroup(
+            "An error occured running a `tinyio` loop.\nThe first exception below is the original error. Since it "
+            "is common for each coroutine to only have one other coroutine waiting on it, then we have stitched "
+            "together their tracebacks for as long as that is possible.\n"
+            "The other exceptions are all exceptions that occurred whilst stopping the other coroutines.\n"
+            "(For a debugger that allows for navigating within exception groups, try "
+            "`https://github.com/patrick-kidger/patdb`.)\n",
+            [base_e, *other_errors.values(), *interesting_cancellation_errors, *other_cancellation_errors],  # pyright: ignore[reportPossiblyUnboundVariable]
         )
     # else let the parent `raise` the original error.
-
-
-def _invalid(out):
-    msg = f"Invalid yield {out}. Must be either `None`, a coroutine, or a list/set of coroutines."
-    if type(out) is tuple:
-        # We could support this but I find the `[]` visually distinctive.
-        msg += (
-            " In particular to wait on multiple coroutines (a 'gather'), then the syntax is `yield [foo, bar]`, "
-            "not `yield foo, bar`."
-        )
-    return RuntimeError(msg)
-
-
-def _already_started(out):
-    return RuntimeError(
-        f"The coroutine `{out}` has already started. However it has not been seen by the `tinyio` loop before and as "
-        "such does not have any result associated with it."
-    )
