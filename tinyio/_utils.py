@@ -2,7 +2,7 @@ import contextlib
 import select
 import socket
 import threading
-from typing import TypeVar
+import types
 
 
 # Not sure if this lock is really necessary, but it's easier to reason about this way.
@@ -56,12 +56,18 @@ class SimpleContextManager:
         return self.enter
 
     def __exit__(self, exc_type, exc_value, exc_tb):
+        __tracebackhide__ = True
         self.exit(exc_value)
 
 
-_E = TypeVar("_E", bound=BaseException)
-
-
-def usage_error(e: _E) -> _E:
-    e.__tinyio_strip_frames__ = True  # pyright: ignore[reportAttributeAccessIssue]
-    return e
+def filter_traceback(e: BaseException) -> None:
+    pieces = []
+    tb = e.__traceback__
+    while tb is not None:
+        if not tb.tb_frame.f_locals.get("__tracebackhide__", False):
+            pieces.append((tb.tb_frame, tb.tb_lasti, tb.tb_lineno))
+        tb = tb.tb_next
+    tb = None
+    for piece in reversed(pieces):
+        tb = types.TracebackType(tb, *piece)
+    e.with_traceback(tb)

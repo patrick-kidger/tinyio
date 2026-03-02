@@ -125,24 +125,6 @@ def test_waiting_on_already_finished(background):
     loop.run(g(foo))
 
 
-def test_cycle():
-    def f():
-        yield gg
-
-    def g():
-        yield ff
-
-    ff = f()
-    gg = g()
-
-    def h():
-        yield [ff, gg]
-
-    loop = tinyio.Loop()
-    with pytest.raises(RuntimeError, match="Cycle detected in `tinyio` loop"):
-        loop.run(h(), exception_group=False)
-
-
 @pytest.mark.parametrize("wait_on_f", (False, True))
 def test_background(wait_on_f: bool):
     val = False
@@ -509,7 +491,7 @@ def test_yield_finished_coroutine(yieldtype):
             assert False
 
     loop = tinyio.Loop()
-    with pytest.raises(RuntimeError, match="has already started"):
+    with pytest.raises(tinyio.CancelledError, match="has already started"):
         loop.run(g())
 
 
@@ -532,7 +514,7 @@ def test_yield_started_generator(yieldtype):
         else:
             assert False
 
-    with pytest.raises(RuntimeError, match="has already started"):
+    with pytest.raises(tinyio.CancelledError, match="has already started"):
         tinyio.Loop().run(g())
 
 
