@@ -1,6 +1,6 @@
 import contextlib
 import queue
-from collections.abc import Callable, Coroutine
+from collections.abc import Awaitable, Callable, Coroutine
 from typing import Any, TypeVar, cast
 
 from ._core import Coro, Event, Loop
@@ -53,7 +53,7 @@ async def to_asyncio(coro: Coro[_Return], exception_group: None | bool = None) -
                 await asyncio.get_running_loop().run_in_executor(None, wait)
 
 
-def from_trio(async_fn: Callable[..., Any], *args: Any) -> Coro[_Return]:
+def from_trio(coro: Awaitable[_Return]) -> Coro[_Return]:
     """Converts a `trio`-compatible async function into a `tinyio`-compatible coroutine.
 
     Uses trio's guest mode to run trio on top of the tinyio event loop.
@@ -79,7 +79,7 @@ def from_trio(async_fn: Callable[..., Any], *args: Any) -> Coro[_Return]:
     async def _wrapper():
         with trio.CancelScope() as cancel_scope:
             cancel_scope_ref[0] = cancel_scope
-            return await async_fn(*args)
+            return await coro
 
     trio.lowlevel.start_guest_run(
         _wrapper,
