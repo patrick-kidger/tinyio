@@ -228,8 +228,8 @@ class Loop:
                     for out_i in out:
                         if isinstance(out_i, Generator):
                             if out_i not in self._results.keys() and out_i not in waiting_on.keys():
-                                if inspect.getgeneratorstate(out_i) == inspect.GEN_CLOSED:
-                                    todo.coro.throw(_already_finished(out_i))
+                                if inspect.getgeneratorstate(out_i) != inspect.GEN_CREATED:
+                                    todo.coro.throw(_already_started(out_i))
                                 queue.appendleft(_Todo(out_i, None))
                                 waiting_on[out_i] = []
                         else:
@@ -245,8 +245,8 @@ class Loop:
                             elif out_i in waiting_on.keys():
                                 waiting_on[out_i].append(waiting_for)
                             else:
-                                if inspect.getgeneratorstate(out_i) == inspect.GEN_CLOSED:
-                                    todo.coro.throw(_already_finished(out_i))
+                                if inspect.getgeneratorstate(out_i) != inspect.GEN_CREATED:
+                                    todo.coro.throw(_already_started(out_i))
                                 queue.appendleft(_Todo(out_i, None))
                                 waiting_on[out_i] = [waiting_for]
                         elif isinstance(out_i, _Wait):
@@ -595,8 +595,8 @@ def _invalid(out):
     return RuntimeError(msg)
 
 
-def _already_finished(out):
+def _already_started(out):
     return RuntimeError(
-        f"The coroutine `{out}` has already finished. However it has not been seen by the `tinyio` loop before and as "
+        f"The coroutine `{out}` has already started. However it has not been seen by the `tinyio` loop before and as "
         "such does not have any result associated with it."
     )
