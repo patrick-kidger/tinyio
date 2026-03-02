@@ -18,6 +18,74 @@ def _flat_tb(e: BaseException) -> list[str]:
     return out
 
 
+def _make_cycle():
+    def f():
+        yield gg
+
+    def g():
+        yield ff
+
+    ff = f()
+    gg = g()
+
+    def h():
+        yield [ff, gg]
+
+    return h()
+
+
+def test_cycle():
+    h = _make_cycle()
+    loop = tinyio.Loop()
+    with pytest.raises(tinyio.CancelledError, match="Cycle detected in `tinyio` loop") as catcher:
+        loop.run(h, exception_group=False)
+    assert _flat_tb(catcher.value) == ["test_cycle", "g", "h"]
+
+
+def test_cycle_misbehaving_coroutine_yield():
+    def wrapper():
+        try:
+            yield _make_cycle()
+        except tinyio.CancelledError:
+            yield 5
+
+    loop = tinyio.Loop()
+    with pytest.warns(match="Instead, the coroutine yielded `5`"):
+        with pytest.raises(tinyio.CancelledError, match="Cycle detected in `tinyio` loop") as catcher:
+            loop.run(wrapper(), exception_group=False)
+    # Unlike the `test_cycle` case, we get one fewer frame in the traceback. I think this is because the place at which
+    # we `coro.throw` the error responds improperly... so we don't get its frame to use in the traceback.
+    assert _flat_tb(catcher.value) == ["test_cycle_misbehaving_coroutine_yield", "g"]
+
+
+def test_cycle_misbehaving_coroutine_return():
+    def wrapper():
+        try:
+            yield _make_cycle()
+        except tinyio.CancelledError:
+            return 5
+
+    loop = tinyio.Loop()
+    with pytest.warns(match="Instead, the coroutine returned `5`"):
+        with pytest.raises(tinyio.CancelledError, match="Cycle detected in `tinyio` loop") as catcher:
+            loop.run(wrapper(), exception_group=False)
+    assert _flat_tb(catcher.value) == ["test_cycle_misbehaving_coroutine_return", "g"]
+
+
+def test_cycle_misbehaving_coroutine_exception():
+    def wrapper():
+        try:
+            yield _make_cycle()
+        except tinyio.CancelledError:
+            raise RuntimeError("kaboom")
+
+    loop = tinyio.Loop()
+    with pytest.warns(match="Instead, the coroutine raised the exception `RuntimeError: kaboom`"):
+        with pytest.raises(tinyio.CancelledError, match="Cycle detected in `tinyio` loop") as catcher:
+            loop.run(wrapper(), exception_group=False)
+    assert _flat_tb(catcher.value) == ["test_cycle_misbehaving_coroutine_exception", "g"]
+
+
 @pytest.mark.parametrize("exception_group", (None, False, True))
 def test_propagation(exception_group):
     def f():
@@ -41,6 +109,7 @@ def test_propagation(exception_group):
         loop.run(f(), exception_group)
     if exception_group is True:
         assert type(catcher.value) is ExceptionGroup
+        assert _flat_tb(catcher.value) == ["test_propagation"]
         [runtime] = catcher.value.exceptions  # pyright: ignore[reportAttributeAccessIssue]
         assert type(runtime) is RuntimeError
         assert _flat_tb(runtime) == ["f", "g", "g2", "h", "i"]
@@ -104,17 +173,18 @@ def test_invalid_yield(exception_group):
         yield
 
     loop = tinyio.Loop()
-    with pytest.raises(Exception) as catcher:
+    with pytest.raises(BaseException) as catcher:
         loop.run(f(), exception_group)
     if exception_group is True:
-        assert type(catcher.value) is ExceptionGroup
-        [runtime] = catcher.value.exceptions
-        assert _flat_tb(runtime) == ["f", "g"]
+        assert type(catcher.value) is BaseExceptionGroup
+        [cancel] = catcher.value.exceptions
+        assert _flat_tb(catcher.value) == ["test_invalid_yield"]
+        assert _flat_tb(cancel) == ["f", "g"]
     else:
-        runtime = catcher.value
-        assert _flat_tb(runtime) == ["test_invalid_yield", "f", "g"]
-    assert type(runtime) is RuntimeError
-    assert "Invalid yield" in str(runtime)
+        cancel = catcher.value
+        assert _flat_tb(cancel) == ["test_invalid_yield", "f", "g"]
+    assert type(cancel) is tinyio.CancelledError
+    assert "Invalid yield" in str(cancel)
 
 
 def _foo():
@@ -344,8 +414,8 @@ def test_error_from_thread_with_context(exception_group):
 def test_keyboard_interrupt_within_loop(exception_group, monkeypatch):
     """Tests an error occurring from within the loop itself, not within one of the coroutines."""
 
-    def _invalid(out):
-        del out
+    def _invalid(coro, value):
+        del coro, value
         raise KeyboardInterrupt
 
     monkeypatch.setattr(tinyio._core, "_invalid", _invalid)
@@ -439,7 +509,7 @@ def test_usage_error_loop_already_running():
         loop.run(outer())
 
     assert str(catcher.value) == "Cannot call `tinyio.Loop().run` whilst the loop is currently running."
-    assert _flat_tb(catcher.value) == ["test_usage_error_loop_already_running", "outer", "inner", "run", "runtime"]
+    assert _flat_tb(catcher.value) == ["test_usage_error_loop_already_running", "outer", "inner"]
 
 
 def test_usage_error_not_a_coroutine():
@@ -451,7 +521,7 @@ def test_usage_error_not_a_coroutine():
         loop.run(not_a_coro)  # pyright: ignore[reportArgumentType]
 
     assert "not a coroutine" in str(catcher.value)
-    assert _flat_tb(catcher.value) == ["test_usage_error_not_a_coroutine", "run", "runtime"]
+    assert _flat_tb(catcher.value) == ["test_usage_error_not_a_coroutine"]
 
 
 @pytest.mark.parametrize("num_yields", (0, 1, 2, 20))
@@ -469,7 +539,7 @@ def test_usage_error_already_started_generator(num_yields):
         loop.run(gen)
 
     assert "generator that has already started" in str(catcher.value)
-    assert _flat_tb(catcher.value) == ["test_usage_error_already_started_generator", "run", "runtime"]
+    assert _flat_tb(catcher.value) == ["test_usage_error_already_started_generator"]
 
 
 def test_usage_error_event_bool():
