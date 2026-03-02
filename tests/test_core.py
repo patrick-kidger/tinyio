@@ -488,7 +488,8 @@ def test_timeout_as_part_of_group_and_only_coroutine():
     assert loop.run(f()) == 3
 
 
-def test_yield_finished_coroutine():
+@pytest.mark.parametrize("yieldtype", ("bare", "set", "list"))
+def test_yield_finished_coroutine(yieldtype):
     def f():
         yield
 
@@ -498,11 +499,41 @@ def test_yield_finished_coroutine():
         next(ff)
 
     def g():
-        yield ff
+        if yieldtype == "bare":
+            yield ff
+        elif yieldtype == "set":
+            yield {ff}
+        elif yieldtype == "list":
+            yield [ff]
+        else:
+            assert False
 
     loop = tinyio.Loop()
-    with pytest.raises(RuntimeError, match="has already finished"):
+    with pytest.raises(RuntimeError, match="has already started"):
         loop.run(g())
+
+
+@pytest.mark.parametrize("yieldtype", ("bare", "set", "list"))
+def test_yield_started_generator(yieldtype):
+    def f():
+        yield
+        yield
+        yield
+
+    def g():
+        ff = f()
+        next(ff)
+        if yieldtype == "bare":
+            yield ff
+        elif yieldtype == "set":
+            yield {ff}
+        elif yieldtype == "list":
+            yield [ff]
+        else:
+            assert False
+
+    with pytest.raises(RuntimeError, match="has already started"):
+        tinyio.Loop().run(g())
 
 
 def test_run_finished_coroutine1():
