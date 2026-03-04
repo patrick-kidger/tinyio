@@ -1,31 +1,57 @@
-from collections.abc import Callable
-from typing import TYPE_CHECKING, Any, Concatenate, ParamSpec, TypeVar
+from typing import Literal, TypeVar
 
-import tinyio
+from ._core import Coro, Event, Loop
+from ._thread import run_in_thread
 
 
-_P = ParamSpec("_P")
 _T = TypeVar("_T")
 _R = TypeVar("_R")
 
 
-def _dupe(coro: tinyio.Coro[_T]) -> tuple[tinyio.Coro[None], tinyio.Coro[_T]]:
-    """Takes a coro assumed to be scheduled on an event loop, and returns:
+def copy(coro: Coro[_T]) -> Coro[Coro[_T]]:
+    """Schedules a coroutine, and returns a new coroutine that returns the same value.
 
-    - a new coroutine that should be scheduled in the background of the same loop;
-    - a new coroutine that can be scheduled anywhere at all (typically a new loop), and
-        will return the same value as the original coroutine.
+    Usage:
+    ```python
+    def your_coroutine():
+        x1 = ...  # some tinyio coroutine
+        x2 = yield tinyio.copy(x1)
+        # `x2` is a brand-new coroutine that returns the same value as `x`:
+        return1 = yield x1
+        return2 = yield x2
+        assert return1 is return2
+    ```
+    This works by scheduling the provided `coro` on the event loop, and then storing the output of the original
+    coroutine once it completes.
 
-    Thus, this is a pipe through which two event loops can talk to one another.
+    This function is useful primarily in conjunction with `tinyio.isolate`, to make information from the main loop
+    available within the isolated loop.
+
+    (More generally this function makes it possible to combine multiple `tinyio.Loop`s. Each individual coroutine can
+    only be scheduled on a single loop, but this function makes it possible to create a fresh coroutine that produces
+    the value returned by the first.)
+
+    **Arguments:**
+
+    - `coro`: the coroutine to copy.
+
+    **Returns:**
+
+    A coroutine that returns a copy of `coro`:
     """
     pipe = []
-    done = tinyio.Event()
-    failed = tinyio.Event()
+    schedule = Event()
+    done = Event()
+    failed = Event()
 
     def put_on_old_loop():
+        # Don't actually `yield coro` until `put_on_new_loop` has started.
+        # I don't know if that matters but it seems worth doing?
+        yield schedule.wait()
         try:
             out = yield coro
-        except BaseException:
+        except BaseException as e:
+            pipe.append(e)
             failed.set()
             done.set()
             raise
@@ -33,83 +59,105 @@ def _dupe(coro: tinyio.Coro[_T]) -> tuple[tinyio.Coro[None], tinyio.Coro[_T]]:
             pipe.append(out)
             done.set()
 
-    def put_on_new_loop():
+    def put_on_new_loop() -> Coro[_T]:
+        schedule.set()
         yield done.wait()
         if failed.is_set():
-            raise RuntimeError("Could not get input as underlying coroutine failed.")
+            raise pipe[0]
         else:
             return pipe[0]
 
-    return put_on_old_loop(), put_on_new_loop()
-
-
-def _nest(coro: tinyio.Coro[_R], exception_group: None | bool = None) -> tinyio.Coro[_R]:
-    """Runs one tinyio event loop within another.
-
-    The outer loop will be in control of the stepping. The inner loop will have a
-    separate collection of coroutines, which will be grouped and mutually shut down if
-    one of them produces an error. Thus, this provides a way to isolate a group of
-    coroutines within a broader collection.
-    """
-    with tinyio.Loop().runtime(coro, exception_group) as gen:
-        while True:
-            try:
-                wait = next(gen)
-            except StopIteration as e:
-                return e.value
-            if wait is None:
-                yield
-            else:
-                yield tinyio.run_in_thread(wait)
+    yield {put_on_old_loop()}
+    return put_on_new_loop()
 
 
 def isolate(
-    fn: Callable[..., tinyio.Coro[_R]],
-    /,
-    *args: tinyio.Coro,
-    exception_group: None | bool = None,
-) -> tinyio.Coro[tuple[_R | BaseException, bool]]:
-    """Runs a coroutine in an isolated event loop, and if it fails, returns the exception that occurred.
+    coro: Coro[_R], /, exception_group: None | bool = None
+) -> Coro[tuple[_R, Literal[True]] | tuple[BaseException, Literal[False]]]:
+    """Runs a coroutine in an isolated event loop, and if it (or any coroutines it yields) fails, then return the
+    exception that occurred. (Cancelling all coroutines it created... but not cancelling the rest of the coroutines on
+    the event loop.)
+
+    Note that the coroutines it yields must all be *new* coroutines, and they cannot already have been seen by the event
+    loop. (Otherwise it would be ambiguous whether they are inside the isolated region or not.) If `coro` depends on
+    other coroutines, then `tinyio.copy` can be used to asychronously copy their results over.
 
     **Arguments:**
 
-    - `fn`: a function that returns a tinyio coroutine. Will be called as `fn(*args)` in order to get the coroutine to
-        run. All coroutines that it depends on must be passed as `*args` (so that communication can be established
-        between the two loops).
-    - `*args`: all coroutines that `fn` depends upon.
+    - `coro`: a tinyio coroutine.
+    - `exception_group`: as `tinyio.Loop().run(..., exception_group=...)`.
 
     **Returns:**
 
     A 2-tuple:
 
-    - the first element is either the result of `fn(*args)` or an exception.
-    - whether `fn(*args)` succeeded or raised an exception.
+    - the first element is either the result of `fn(*args)`, or its exception.
+    - the second element is whether `fn(*args)` succeeded (`True`) or raised an exception (`False`).
+
+    !!! Example
+
+        Run a coroutine, and always perform cleanup even if an error was raised:
+        ```python
+        def get_request():
+            conn = make_connection():
+            out, success = yield tinyio.isolate(conn.say_hello())
+            yield conn.say_goodbye()
+            if success:
+                return out
+            else:
+                raise out
+        ```
+
+    !!! Example
+
+        If another coroutine provides an output that must be consumed by the isolated coroutine, then it cannot be
+        yielded by the isolated coroutine.
+
+        ```python
+        # The following code is wrong!
+
+        def main():
+            get_x = return_x()
+            # Schedule `get_x` outside of the isolated region...
+            yield get_x
+            yield tinyio.isolate(use_x(get_x))
+
+        def return_x():
+            yield
+            return 3
+
+        def use_x(get_x):
+            # ...and also schedule `get_x` inside of the isolated region! This is not possible.
+            x = yield get_x
+        ```
+
+        Instead, you need to make a fresh coroutine to use within the isolated region:
+
+        ```python
+        def main():
+            get_x = return_x()
+            yield get_x
+            get_x_copy = yield tinyio.copy(get_x)  # this line is new
+            yield tinyio.isolate(use_x(get_x_copy))
+        ```
     """
-    if len(args) > 0:
-        olds, news = zip(*map(_dupe, args), strict=True)
-    else:
-        olds, news = [], []
-    yield set(olds)
+
     try:
-        # This `yield from` is load bearing! We must not allow the tinyio event loop to
-        # interpose itself between the exception arising out of `fn(*news)`, and the
-        # current stack frame. Otherwise we would get a `CancelledError` here instead.
-        return (yield from _nest(fn(*news), exception_group=exception_group)), True
-    except BaseException as e:
+        with Loop().runtime(coro, exception_group) as gen:
+            while True:
+                try:
+                    wait = next(gen)
+                except StopIteration as e:
+                    return e.value, True
+                if wait is None:
+                    yield
+                else:
+                    yield run_in_thread(wait)
+    # Catch all `Exception`s except `AssertionError`, which IMO should really be a `BaseException` – it usually
+    # indicates a fatal exception because an expected invariant is not true.
+    except AssertionError:
+        raise
+    # Do *not* catch `BaseException` here: in particular `tinyio.CancellationError` must be allowed to propagate; also
+    # things like `SystemExit`/`KeyboardInterrupt` are probably best treated as fatal.
+    except Exception as e:
         return e, False
-
-
-# Stand back, some typing hackery required.
-if TYPE_CHECKING:
-
-    def _fn_signature(*args: tinyio.Coro[_T], exception_group: None | bool = None): ...
-
-    def _make_isolate(
-        fn: Callable[_P, Any],
-    ) -> Callable[
-        Concatenate[Callable[_P, tinyio.Coro[_R]], _P],
-        tinyio.Coro[tuple[_R | BaseException, bool]],
-    ]: ...
-
-    isolate = _make_isolate(_fn_signature)
-    del _fn_signature, _make_isolate

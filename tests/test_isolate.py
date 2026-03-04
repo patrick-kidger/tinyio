@@ -1,26 +1,31 @@
+import warnings
 from collections.abc import Callable
 
 import pytest
 import tinyio
 
 
+_sentinel = object()
+
+
 class SingleElementQueue:
     def __init__(self):
         self._event = tinyio.Event()
-        self._elem = None
+        self._elem = _sentinel
 
     def put(self, x):
-        if self._elem is not None:
+        if self._elem is not _sentinel:
             raise ValueError("Queue is full")
 
         self._elem = x
         self._event.set()
 
     def get(self):
-        while self._elem is None:
-            yield self._event.wait()
+        yield self._event.wait()
+        self._event.clear()
+        assert self._elem is not _sentinel
         x = self._elem
-        self._elem = None
+        self._elem = _sentinel
         return x
 
 
@@ -49,7 +54,7 @@ def test_isolate(isolate_g: bool, isolate_h: bool):
 
     def maybe_isolate(c: Callable[[], tinyio.Coro[int]], isolate: bool) -> tinyio.Coro[int]:
         if isolate:
-            x, _ = yield tinyio.isolate(c)
+            x, _ = yield tinyio.isolate(c())
             return x
         else:
             return (yield c())
@@ -98,7 +103,7 @@ def test_isolate_with_error_in_inner_loop():
         return (yield [h(), i()])
 
     def try_isolated() -> tinyio.Coro[list[int]]:
-        x, success = yield tinyio.isolate(isolated)
+        x, success = yield tinyio.isolate(isolated())
         if not success:
             x = [-1, -1]
 
@@ -131,7 +136,8 @@ def test_isolate_with_args():
             return z
 
     def try_add_three(x: int) -> tinyio.Coro[tuple[int, bool]]:
-        return (yield tinyio.isolate(unreliable_add_two, slow_add_one(x)))
+        arg = yield tinyio.copy(slow_add_one(x))
+        return (yield tinyio.isolate(unreliable_add_two(arg)))
 
     assert tinyio.Loop().run(try_add_three(0)) == (3, True)
     assert tinyio.Loop().run(try_add_three(1)) == (4, True)
@@ -142,3 +148,32 @@ def test_isolate_with_args():
     assert not success
     assert type(result) is RuntimeError
     assert str(result) == "That is too hard."
+
+
+def test_copy_identity():
+    def foo():
+        yield
+        return object()
+
+    def bar():
+        f = foo()
+        g = yield tinyio.copy(f)
+        assert (yield f) is (yield g)
+        return 3
+
+    assert tinyio.Loop().run(bar()) == 3
+
+
+def test_isolate_respects_cancellation():
+    def foo():
+        while True:
+            yield
+
+    def bar():
+        yield {tinyio.isolate(foo())}
+        raise RuntimeError("Kaboom")
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        with pytest.raises(RuntimeError, match="Kaboom"):
+            tinyio.Loop().run(bar())
