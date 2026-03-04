@@ -165,9 +165,16 @@ def test_copy_identity():
 
 
 def test_isolate_respects_cancellation():
+    foo_cancelled = False
+
     def foo():
-        while True:
-            yield
+        nonlocal foo_cancelled
+        try:
+            while True:
+                yield
+        except tinyio.CancelledError:
+            foo_cancelled = True
+            raise
 
     def bar():
         yield {tinyio.isolate(foo())}
@@ -177,3 +184,4 @@ def test_isolate_respects_cancellation():
         warnings.simplefilter("error")
         with pytest.raises(RuntimeError, match="Kaboom"):
             tinyio.Loop().run(bar())
+    assert foo_cancelled

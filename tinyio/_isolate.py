@@ -42,7 +42,6 @@ def copy(coro: Coro[_T]) -> Coro[Coro[_T]]:
     pipe = []
     schedule = Event()
     done = Event()
-    failed = Event()
 
     def put_on_old_loop():
         # Don't actually `yield coro` until `put_on_new_loop` has started.
@@ -51,21 +50,21 @@ def copy(coro: Coro[_T]) -> Coro[Coro[_T]]:
         try:
             out = yield coro
         except BaseException as e:
-            pipe.append(e)
-            failed.set()
-            done.set()
+            pipe.append((e, False))
             raise
         else:
-            pipe.append(out)
+            pipe.append((out, True))
+        finally:
             done.set()
 
     def put_on_new_loop() -> Coro[_T]:
         schedule.set()
         yield done.wait()
-        if failed.is_set():
-            raise pipe[0]
+        [[out, success]] = pipe
+        if success:
+            return out
         else:
-            return pipe[0]
+            raise out
 
     yield {put_on_old_loop()}
     return put_on_new_loop()
