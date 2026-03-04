@@ -569,3 +569,15 @@ def test_reentrant():
 
     with pytest.raises(RuntimeError, match="whilst the loop is currently running"):
         loop.run(f())
+
+
+def test_runtime_leave_without_finishing():
+    def coro():
+        yield
+
+    def foo():
+        with tinyio.Loop().runtime(coro(), exception_group=None) as gen:
+            return 3
+
+    with pytest.raises(RuntimeError, match="only partially completed"):
+        foo()
