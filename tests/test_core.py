@@ -576,7 +576,7 @@ def test_runtime_leave_without_finishing():
         yield
 
     def foo():
-        with tinyio.Loop().runtime(coro(), exception_group=None) as gen:
+        with tinyio.Loop().runtime(coro(), exception_group=None):
             return 3
 
     with pytest.raises(RuntimeError, match="only partially completed"):
