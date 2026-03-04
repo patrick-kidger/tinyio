@@ -126,8 +126,27 @@ class Loop:
             wake_loop.close()
             assert self._running
             self._running = False
-            if e is not None:
+            if e is None:
+                del __tracebackhide__
+                if len(waiting_on) != 0 or inspect.getgeneratorstate(enter) != inspect.GEN_CLOSED:
+                    raise RuntimeError(
+                        "Exiting a tinyio loop that is only partially completed. Probably you have writting something "
+                        "like:\n"
+                        "```python\n"
+                        "with Loop().runtime(...) as gen:\n"
+                        "    return\n"
+                        "```\n"
+                        "without running the `gen`erator to completion. This may lead to a memory leak as the "
+                        "partially-completed coroutines are still running."
+                    )
+            else:
                 _cleanup(e, waiting_on, current_coro_ref[0], exception_group)
+                # If we get an exception then there are two options:
+                # 1. the exception occured within `enter` – likely but not necessarily a user exception – and so it will
+                #     already be closed, and this call does nothing.
+                # 2. the exception occured whilst waiting – e.g. a KeyboardInterrupt whilst sleeping – and we are
+                #     outside of `enter` at the time this occurs. In this case we need to clean it up manually.
+                enter.close()
 
         return SimpleContextManager(enter, exit)
 
