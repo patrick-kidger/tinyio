@@ -114,8 +114,8 @@ tinyio.Lock               tinyio.TimeoutError
     ```python
     def main():
         iterator = yield tinyio.as_completed({coro1, coro2, coro3})
-        while not iterator.done():
-            x = yield iterator.get()
+        for next_coro in iterator:
+            result = yield next_coro
     ```
 
 ---
