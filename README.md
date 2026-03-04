@@ -91,9 +91,9 @@ If any coroutine raises an error, then:
 
 This gives every coroutine a chance to shut down gracefully. Debuggers like [`patdb`](https://github.com/patrick-kidger/patdb) offer the ability to navigate across exceptions in an exception group, allowing you to inspect the state of all coroutines that were related to the error.
 
-### Batteries-included
+### Synchronisation
 
-We ship batteries-included with the usual collection of standard operations.
+We ship batteries-included with the usual collection of standard operations for synchronisation.
 
 <details><summary>Click to expand</summary>
 
@@ -178,6 +178,73 @@ tinyio.Lock               tinyio.TimeoutError
     - `.map(fn, xs)`, which is a coroutine you can `yield` on. This is equivalent to `yield [tinyio.run_in_thread(fn, x) for x in xs]`.
  
 ---
+
+</details>
+
+### Asynchronous context managers
+
+<details><summary>Click to expand</summary>
+
+You can use the following pattern to implement context managers with asynchronous creation:
+
+```python
+import contextlib
+import tinyio
+
+def my_context_manager(x):
+    print("Initialising...")
+    yield tinyio.sleep(1)
+    print("Initialised")
+    return make_context_manager(x)
+
+@contextlib.contextmanager
+def make_context_manager(x):
+    try:
+        yield x
+    finally:
+        print("Cleaning up")
+
+def my_coro():
+    with (yield my_context_manager(x=5)) as val:
+        print(f"Got val {val}")
+
+tinyio.Loop().run(my_coro())
+```
+
+This isn't anything fancier than just using a coroutine that returns a regular `with`-compatible context manager. See `tinyio.Semaphore` for an example of this pattern.
+
+</details>
+
+### Asynchronous iterators
+
+<details><summary>Click to expand</summary>
+
+You can use the following pattern to implement asychronous iterators:
+
+```python
+import tinyio
+
+def slow_range(x):  # this function is an iterator-of-coroutines
+for i in range(x):
+    yield slow_range_i(i)  # this `yield` statement is seen by the `for` loop
+
+def slow_range_i(i):  # this function is a coroutine
+yield tinyio.sleep(1)  # this `yield` statement is seen by the `tinyio.Loop()`
+return i
+
+def my_coro():
+for x in slow_range(5):
+    x = yield x
+    print(f"Got {x}")
+
+tinyio.Loop().run(my_coro())
+```
+
+Here we just have `yield` being used in a couple of different ways that you're already used to:
+- as a regular Python generator/iterator;
+- as a `tinyio` coroutine.
+
+For an example of this, see `tinyio.as_completed`.
 
 </details>
 
@@ -275,70 +342,27 @@ tinyio.from_asyncio       tinyio.from_trio
 
 </details>
 
-### Asynchronous context managers
+### Advanced topic: isolating coroutines without crashing the others
 
 <details><summary>Click to expand</summary>
 
-You can use the following pattern to implement context managers with asynchronous creation:
+If you would like to run a coroutine (and transitively, all the coroutines it `yield`s) without crashing the entire event loop, then you can use `tinyio.isolate`. This will run the coroutine in a nested `tinyio.Loop` – so that it crashing will only affect everything in that nested loop – and then return the result or the error.
 
 ```python
-import contextlib
-import tinyio
+def some_coroutine(x):
+    if x == 3:
+        raise ValueError("Oh no, a bug!")
+    yield
 
-def my_context_manager(x):
-    print("Initialising...")
-    yield tinyio.sleep(1)
-    print("Initialised")
-    return make_context_manager(x)
+def someone_elses_buggy_code():
+    yield [some_coroutine(x=3), another_coroutine()]
 
-@contextlib.contextmanager
-def make_context_manager(x):
-    try:
-        yield x
-    finally:
-        print("Cleaning up")
-
-def my_coro():
-    with (yield my_context_manager(x=5)) as val:
-        print(f"Got val {val}")
-
-tinyio.Loop().run(my_coro())
+def main():
+    app = someone_elses_buggy_code()
+    result_or_error, success = yield tinyio.isolate(app)
+    # at this point then `someone_elses_buggy_code`, `some_coroutine` and
+    #`another_coroutine` have been cancelled, but `main` is still running.
 ```
-
-This isn't anything fancier than just using a coroutine that returns a regular `with`-compatible context manager. See `tinyio.Semaphore` for an example of this pattern.
-
-</details>
-
-### Asynchronous iterators
-
-<details><summary>Click to expand</summary>
-
-You can use the following pattern to implement asychronous iterators:
-
-```python
-import tinyio
-
-def slow_range(x):  # this function is an iterator-of-coroutines
-    for i in range(x):
-        yield slow_range_i(i)  # this `yield` statement is seen by the `for` loop
-
-def slow_range_i(i):  # this function is a coroutine
-    yield tinyio.sleep(1)  # this `yield` statement is seen by the `tinyio.Loop()`
-    return i
-
-def my_coro():
-    for x in slow_range(5):
-        x = yield x
-        print(f"Got {x}")
-
-tinyio.Loop().run(my_coro())
-```
-
-Here we just have `yield` being used in a couple of different ways that you're already used to:
-- as a regular Python generator/iterator;
-- as a `tinyio` coroutine.
-
-For an example of this, see `tinyio.as_completed`.
 
 </details>
 
@@ -359,7 +383,7 @@ You can distinguish it from a normal Python function by putting `if False: yield
 </details>
 
 <details>
-<summary>vs <code>asyncio</code> or <code>trio</code>?.</summary>
+<summary>vs <code>asyncio</code> or <code>trio</code>?</summary>
 <br>
 
 I wasted a *lot* of time trying to get correct error propagation with `asyncio`, trying to reason whether my tasks would be cleaned up correctly or not (edge-triggered vs level-triggered etc etc). `trio` is excellent but still has a one-loop-per-thread rule, and doesn't propagate cancellations to/from threads. These points inspired me to try writing my own.
@@ -371,8 +395,11 @@ I wasted a *lot* of time trying to get correct error propagation with `asyncio`,
 - simple+robust error semantics (crash the whole loop if anything goes wrong);
 - tiny, hackable, codebase.
 
-However conversely, `tinyio` does not offer the ability to schedule work on the event loop whilst cleaning up from errors.
+Conversely, at least right now we don't ship batteries-included with a few things:
 
-If none of the bullet points are must-haves for you, or if needing the event loop during cleanup is a dealbreaker, then either `trio` or `asyncio` are likely to be better choices. :)
+- asynchronously launching subprocesses / making network requests / accessing the file system (in all cases use `run_in_thread` instead);
+- scheduling work on the event loop whilst cleaning up from errors.
+
+If none of the bullet points are must-haves for you, or if any of its limitations are dealbreakers, then either `trio` or `asyncio` are likely to be better choices. :)
 
 </details>
