@@ -185,12 +185,15 @@ tinyio.Lock               tinyio.TimeoutError
 
 <details><summary>Click to expand</summary>
 
-You can use the following pattern to implement context managers with asynchronous creation:
+You can use the following pattern to implement context managers with asynchronous entry:
 
 ```python
-import contextlib
-import tinyio
-
+def my_coro():
+    with (yield my_context_manager(x=5)) as val:
+        print(f"Got val {val}")
+```
+where:
+```python
 def my_context_manager(x):
     print("Initialising...")
     yield tinyio.sleep(1)
@@ -203,12 +206,6 @@ def make_context_manager(x):
         yield x
     finally:
         print("Cleaning up")
-
-def my_coro():
-    with (yield my_context_manager(x=5)) as val:
-        print(f"Got val {val}")
-
-tinyio.Loop().run(my_coro())
 ```
 
 This isn't anything fancier than just using a coroutine that returns a regular `with`-compatible context manager. See `tinyio.Semaphore` for an example of this pattern.
@@ -222,22 +219,20 @@ This isn't anything fancier than just using a coroutine that returns a regular `
 You can use the following pattern to implement asychronous iterators:
 
 ```python
-import tinyio
-
+def my_coro():
+    for x in slow_range(5):
+        x = yield x
+        print(f"Got {x}")
+```
+where:
+```python
 def slow_range(x):  # this function is an iterator-of-coroutines
-for i in range(x):
-    yield slow_range_i(i)  # this `yield` statement is seen by the `for` loop
+    for i in range(x):
+        yield slow_range_i(i)  # this `yield` statement is seen by the `for` loop
 
 def slow_range_i(i):  # this function is a coroutine
-yield tinyio.sleep(1)  # this `yield` statement is seen by the `tinyio.Loop()`
-return i
-
-def my_coro():
-for x in slow_range(5):
-    x = yield x
-    print(f"Got {x}")
-
-tinyio.Loop().run(my_coro())
+    yield tinyio.sleep(1)  # this `yield` statement is seen by the `tinyio.Loop()`
+    return i
 ```
 
 Here we just have `yield` being used in a couple of different ways that you're already used to:
