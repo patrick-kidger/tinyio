@@ -91,11 +91,11 @@ If any coroutine raises an error, then:
 
 This gives every coroutine a chance to shut down gracefully. Debuggers like [`patdb`](https://github.com/patrick-kidger/patdb) offer the ability to navigate across exceptions in an exception group, allowing you to inspect the state of all coroutines that were related to the error.
 
-### Synchronisation
+## Further documentation
+
+<details><summary><h3>Synchronisation</h3> (Click to expand)</summary>
 
 We ship batteries-included with the usual collection of standard operations for synchronisation.
-
-<details><summary>Click to expand</summary>
 
 ```python
 tinyio.as_completed       tinyio.Semaphore
@@ -181,9 +181,7 @@ tinyio.Lock               tinyio.TimeoutError
 
 </details>
 
-### Asynchronous context managers
-
-<details><summary>Click to expand</summary>
+<details><summary><h3>Asynchronous context managers</h3> (Click to expand)</summary>
 
 You can use the following pattern to implement context managers with asynchronous entry:
 
@@ -212,9 +210,7 @@ This isn't anything fancier than just using a coroutine that returns a regular `
 
 </details>
 
-### Asynchronous iterators
-
-<details><summary>Click to expand</summary>
+<details><summary><h3>Asynchronous iterators</h3> (Click to expand)</summary>
 
 You can use the following pattern to implement asychronous iterators:
 
@@ -243,11 +239,9 @@ For an example of this, see `tinyio.as_completed`.
 
 </details>
 
-### Integration with `asyncio` and `trio`
+<details><summary><h3>Integration with `asyncio` and `trio`</h3> (Click to expand)</summary>
 
 We have support for putting `trio` event loops within `asyncio`/`trio` event loops, or vice-versa.
-
-<details><summary>Click to expand</summary>
 
 ```python
 tinyio.to_asyncio         tinyio.to_trio
@@ -337,9 +331,7 @@ tinyio.from_asyncio       tinyio.from_trio
 
 </details>
 
-### Advanced topic: isolating coroutines without crashing the others
-
-<details><summary>Click to expand</summary>
+<details><summary><h3>Isolating some coroutines without crashing the others</h3> (Click to expand)</summary>
 
 If you would like to run a coroutine (and transitively, all the coroutines it `yield`s) without crashing the entire event loop, then you can use `tinyio.isolate`. This will run the coroutine in a nested `tinyio.Loop` – so that it crashing will only affect everything in that nested loop – and then return the result or the error.
 
@@ -362,6 +354,8 @@ def main():
 </details>
 
 ## FAQ
+
+(Click to expand)
 
 <details>
 <summary>Why <code>yield</code> - why not <code>await</code> like is normally seen for coroutines?</summary>
