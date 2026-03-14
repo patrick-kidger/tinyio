@@ -321,7 +321,7 @@ tinyio.from_asyncio       tinyio.from_trio
 
 ---
 
-- `tinyio.from_trio(async_fn, *args)`
+- `tinyio.from_trio(coro)`
 
     This converts an `trio` coroutine into a `tinyio` coroutine.
 
@@ -332,7 +332,7 @@ tinyio.from_asyncio       tinyio.from_trio
         return x + 1
 
     def foo(x):
-        y = yield tinyio.from_trio(add_one, x)
+        y = yield tinyio.from_trio(add_one(x))
         return y
 
     tinyio.Loop().run(foo(3))
