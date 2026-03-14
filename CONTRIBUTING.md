@@ -13,7 +13,7 @@ Then clone and install the library:
 ```bash
 git clone https://github.com/your-username-here/tinyio.git
 cd tinyio
-pip install -e '.[dev]'
+pip install -e . --group dev
 pre-commit install  # `pre-commit` is installed by `pip` on the previous line
 ```
 
@@ -26,7 +26,7 @@ Now make your changes. Make sure to include additional tests if necessary.
 Next verify the tests all pass:
 
 ```bash
-pip install -e '.[tests]'
+pip install -e . --group tests
 pytest  # `pytest` is installed by `pip` on the previous line.
 ```
 
