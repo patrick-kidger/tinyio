@@ -2,6 +2,10 @@
 build-backend = "hatchling.build"
 requires = ["hatchling"]
 
+[dependency-groups]
+dev = ["pre-commit"]
+tests = ["pytest", "trio"]
+
 [project]
 authors = [
   {email = "contact@kidger.site", name = "Patrick Kidger"}
@@ -21,10 +25,6 @@ readme = "README.md"
 requires-python = ">=3.11"
 urls = {repository = "https://github.com/patrick-kidger/tinyio"}
 version = "0.4.0"
-
-[dependency-groups]
-dev = ["pre-commit"]
-tests = ["pytest", "trio"]
 
 [tool.hatch.build]
 include = ["tinyio/*"]
