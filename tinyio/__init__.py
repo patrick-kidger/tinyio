@@ -8,6 +8,7 @@ from ._core import (
 from ._integrations import (
     from_asyncio as from_asyncio,
     from_trio as from_trio,
+    nest as nest,
     to_asyncio as to_asyncio,
     to_trio as to_trio,
 )
