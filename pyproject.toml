@@ -24,6 +24,16 @@ version = "0.4.0"
 
 [project.optional-dependencies]
 dev = ["pre-commit"]
+docs = [
+  "hippogriffe==0.2.2",
+  "griffe==1.7.3",
+  "mkdocs==1.6.1",
+  "mkdocs-include-exclude-files==0.1.0",
+  "mkdocs-material==9.6.7",
+  "mkdocstrings==0.28.3",
+  "mkdocstrings-python==1.16.8",
+  "pymdown-extensions==10.14.3"
+]
 tests = ["pytest", "trio"]
 
 [tool.hatch.build]

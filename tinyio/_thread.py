@@ -17,7 +17,8 @@ def run_in_thread(fn: Callable[_Params, _Return], /, *args: _Params.args, **kwar
     """A `tinyio` coroutine for running the blocking function `fn(*args, **kwargs)` in a thread.
 
     If this coroutine is cancelled then the cancellation will be raised in the thread as well; vice-versa if the
-    function call raises an error then this will propagate to the coroutine.
+    function call raises an error then this will propagate to the coroutine. (Note that this is unlike normal Python
+    threads, which do not have this feature.)
 
     **Arguments:**
 

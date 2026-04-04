@@ -84,7 +84,7 @@ def isolate(
     **Arguments:**
 
     - `coro`: a tinyio coroutine.
-    - `exception_group`: as `tinyio.Loop().run(..., exception_group=...)`.
+    - `exception_group`: as the `exception_group` parameter of [`tinyio.Loop.run`][].
 
     **Returns:**
 

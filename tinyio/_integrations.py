@@ -11,7 +11,35 @@ _Return = TypeVar("_Return")
 
 
 def from_asyncio(coro: Coroutine[Any, Any, _Return]) -> Coro[_Return]:
-    """Converts an `asyncio`-compatible coroutine into a `tinyio`-compatible coroutine."""
+    """Converts an `asyncio` coroutine into a `tinyio` coroutine.
+
+    **Arguments:**
+
+    - `coro`: an `asyncio` coroutine.
+
+    **Returns:**
+
+    A `tinyio` coroutine.
+
+    !!! Example
+
+        ```python
+        async def add_one(x):
+            await asyncio.sleep(1)
+            return x + 1
+
+        def foo(x):
+            y = yield tinyio.from_asyncio(add_one(x))
+            return y
+
+        tinyio.Loop().run(foo(3))
+        ```
+
+    !!! warning
+
+        Note that the entire asyncio event loop will be ran in a thread. This may lead to surprises if the `asyncio` and
+        non-`asyncio` portions interact in non-threadsafe ways.
+    """
 
     # This is a bit disappointing. Whilst `asyncio` does provide a hacky way to single-step its loop
     # (`loop.call_soon(loop.stop); loop.run_forever()`), it does *not* provide a method for checking when its event loop
@@ -38,7 +66,31 @@ def from_asyncio(coro: Coroutine[Any, Any, _Return]) -> Coro[_Return]:
 
 
 async def to_asyncio(coro: Coro[_Return], exception_group: None | bool = None) -> Coroutine[Any, Any, _Return]:
-    """Converts a `tinyio`-compatible coroutine into an `asyncio`-compatible coroutine."""
+    """Converts a `tinyio` coroutine into an `asyncio` coroutine.
+
+    **Arguments:**
+
+    - `coro`: a `tinyio` coroutine.
+    - `exception_group`: as the `exception_group` parameter of [`tinyio.Loop.run`][].
+
+    **Returns:**
+
+    An `asyncio` coroutine.
+
+    !!! Example
+
+        ```python
+        def add_one(x):
+            yield tinyio.sleep(1)
+            return x + 1
+
+        async def foo(x):
+            y = await tinyio.to_asyncio(add_one(x))
+            return y
+
+        asyncio.run(foo(3))
+        ```
+    """
     import asyncio
 
     with Loop().runtime(coro, exception_group) as gen:
@@ -54,9 +106,31 @@ async def to_asyncio(coro: Coro[_Return], exception_group: None | bool = None) -
 
 
 def from_trio(coro: Awaitable[_Return]) -> Coro[_Return]:
-    """Converts a `trio`-compatible async function into a `tinyio`-compatible coroutine.
+    """Converts a `trio` coroutine into a `tinyio` coroutine.
 
     Uses trio's guest mode to run trio on top of the tinyio event loop.
+
+    **Arguments:**
+
+    - `coro`: a `trio` coroutine.
+
+    **Returns:**
+
+    A `tinyio` coroutine.
+
+    !!! Example
+
+        ```python
+        async def add_one(x):
+            await trio.sleep(1)
+            return x + 1
+
+        def foo(x):
+            y = yield tinyio.from_trio(add_one(x))
+            return y
+
+        tinyio.Loop().run(foo(3))
+        ```
     """
     import trio  # pyright: ignore[reportMissingImports]
 
@@ -116,7 +190,31 @@ def from_trio(coro: Awaitable[_Return]) -> Coro[_Return]:
 
 
 async def to_trio(coro: Coro[_Return], exception_group: None | bool = None) -> _Return:
-    """Converts a `tinyio`-compatible coroutine into a `trio`-compatible coroutine."""
+    """Converts a `tinyio` coroutine into a `trio` coroutine.
+
+    **Arguments:**
+
+    - `coro`: a `tinyio` coroutine.
+    - `exception_group`: as the `exception_group` parameter of [`tinyio.Loop.run`][].
+
+    **Returns:**
+
+    A `trio` coroutine.
+
+    !!! Example
+
+        ```python
+        def add_one(x):
+            yield tinyio.sleep(1)
+            return x + 1
+
+        async def foo(x):
+            y = await tinyio.to_trio(add_one(x))
+            return y
+
+        trio.run(foo, 3)
+        ```
+    """
     import trio  # pyright: ignore[reportMissingImports]
 
     with Loop().runtime(coro, exception_group) as gen:

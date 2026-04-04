@@ -22,7 +22,7 @@ def sleep(delay_in_seconds: int | float) -> Coro[None]:
 
 
 class TimeoutError(BaseException):
-    pass
+    """Raised by [`tinyio.TimeoutError`][] inside a coroutine that has not completed within its timeout."""
 
 
 TimeoutError.__module__ = "tinyio"
@@ -40,6 +40,12 @@ def timeout(coro: Coro[_T], timeout_in_seconds: int | float) -> Coro[tuple[None 
 
     A coroutine that an be `yield`ed on. This will return a pair of either `(output, True)` or `(None, False)`,
     corresponding to whether `coro` completed within the timeout or not.
+
+    !!! warning
+
+        In the event of a timeout, then note that whilst `coro` will have a `TimeoutError` arising from the `yield`
+        point it is currently waiting at, it will *not* also cancel any other coroutines it has scheduled or is waiting
+        on.
     """
     done = Event()
     outs = []

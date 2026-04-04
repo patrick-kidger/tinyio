@@ -9,6 +9,7 @@ import threading
 import time
 import traceback
 import types
+import typing
 import warnings
 import weakref
 from collections.abc import Callable, Generator
@@ -29,13 +30,31 @@ from ._utils import EventWithFileno, SimpleContextManager, filter_traceback
 
 
 _Return = TypeVar("_Return")
-Coro: TypeAlias = Generator[Any, Any, _Return]
+if hasattr(typing, "GENERATING_DOCUMENTATION") and not typing.TYPE_CHECKING:
+
+    class Coro:
+        def __class_getitem__(cls, item):
+            return CoroWithSubscript[item]
+
+    class CoroWithSubscript(typing.Generic[_Return]):
+        pass
+
+    Coro.__module__ = "builtins"
+    CoroWithSubscript.__name__ = CoroWithSubscript.__qualname__ = "Coro"
+    CoroWithSubscript.__module__ = "builtins"
+else:
+    Coro: TypeAlias = Generator[Any, Any, _Return]
 
 
 class Loop:
-    """Event loop for running `tinyio`-style coroutines."""
+    """Event loop for running `tinyio`-style coroutines. The results of each coroutine are recorded by the loop, so you
+    can call [`tinyio.Loop.run`][] multiple times.
+
+    Unlike other asynchronous frameworks, loops are not restricted to one-per-thread.
+    """
 
     def __init__(self):
+        """Initializes the loop."""
         # Keep around the results with weakrefs.
         # This makes it possible to perform multiple `.run`s, with coroutines that may internally await on the same
         # coroutines as each other.
@@ -49,9 +68,11 @@ class Loop:
 
         **Arguments:**
 
-        - `coro`: a Python coroutine to run; it may yield `None`, other coroutines, or lists-of-coroutines.
-        - `exception_group`: in the event of an error in one of the coroutines (which will cancel all other coroutines
-            and shut down the loop), then this determines the kind of exception raised out of the loop:
+        - `coro`: a Python coroutine to run; it may yield `None`, other coroutines, or lists-of-coroutines, or
+            sets-of-coroutines.
+        - `exception_group`: in the event of an error in one of the coroutines, then all other coroutines will be
+            cancelled and the loop will be shut down the loop. This arguments determines the kind of exception raised
+            out of the loop:
             - if `False` then raise just that error, silently ignoring any errors that occur when cancelling the other
                 coroutines.
             - if `True` then always raise a `{Base}ExceptionGroup`, whose first sub-exception will be the original
@@ -63,7 +84,7 @@ class Loop:
 
         **Returns:**
 
-        The final `return` from `coro`.
+        The value returned from `coro`.
         """
         __tracebackhide__ = True
         try:
@@ -447,13 +468,27 @@ class Event:
     """A marker that something has happened."""
 
     def __init__(self):
+        """**Arguments:** None."""
         self._value = False
         self._waits = dict[_Wait, None]()
 
-    def is_set(self):
+    def is_set(self) -> bool:
+        """**Arguments:** None.
+
+        **Returns:**
+
+        Whether the event has been set.
+        """
         return self._value
 
     def set(self):
+        """Sets the event. Any coroutines blocked on `yield event.wait()` will be woken up, and `.is_set()` will now
+        return `True`.
+
+        **Arguments:** None.
+
+        **Returns:** None.
+        """
         with _global_event_lock:
             if not self._value:
                 for wait in self._waits.copy().keys():
@@ -461,6 +496,13 @@ class Event:
                 self._value = True
 
     def clear(self):
+        """Clears the event. Any coroutines that later call `yield event.wait()` will be blocked until the event is set,
+        and `.is_set()` will now return `False`.
+
+        **Arguments:** None.
+
+        **Returns:** None.
+        """
         with _global_event_lock:
             if self._value:
                 for wait in self._waits.keys():
@@ -468,6 +510,41 @@ class Event:
                 self._value = False
 
     def wait(self, timeout_in_seconds: None | int | float = None) -> Coro[None]:
+        """Waits until the event is set.
+
+        Usage:
+        ```python
+        import tinyio
+
+        event = tinyio.Event()
+
+        def foo():
+            yield event.wait()
+            print("running foo")
+
+        def bar():
+            print("running bar")
+            yield
+            event.set()
+
+        def run():
+            yield [foo(), bar()]
+
+        tinyio.Loop().run(run())
+        # running bar
+        # running foo
+        ```
+        Note how `foo` is not able to run until `bar` has set the event.
+
+        **Arguments:**
+
+        - `timeout_in_seconds`: the maximum time to wait. After this long then the
+        coroutine waiting on this event will unblock anyway.
+
+        **Returns:**
+
+        A coroutine that can be yielded.
+        """
         yield _Wait(self, timeout_in_seconds)
 
     def __bool__(self):

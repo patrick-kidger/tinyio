@@ -38,3 +38,16 @@ git push
 
 Finally, open a pull request on GitHub!
 
+---
+
+**If you're making changes to the documentation:**
+
+Make your changes. You can then build the documentation by doing
+
+```bash
+pip install -e '.[docs]'
+mkdocs serve
+```
+
+You can then see your local copy of the documentation by navigating to `localhost:8000` in a web browser.
+

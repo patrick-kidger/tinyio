@@ -27,6 +27,7 @@ class Semaphore:
         self._events = co.deque[Event]()
 
     def __call__(self) -> Coro[contextlib.AbstractContextManager[None]]:
+        """Block until the semaphore can be entered."""
         if self._value == 0:
             event = Event()
             self._events.append(event)
@@ -55,24 +56,63 @@ class _CloseSemaphore:
 
 
 class Lock:
-    """Prevents multiple coroutines from accessing a single resource."""
+    """Prevents multiple coroutines from accessing a single resource.
+
+    Usage:
+    ```python
+    lock = tinyio.Lock()
+
+    def coro1():
+        with (yield lock()):
+            ...
+
+    def coro2():
+        with (yield lock()):
+            ...
+    ```
+    At most one of `coro1` or `coro2` will be able to run inside their `...` region at time.
+
+    Note that this class is just a convenience wrapper for `tinyio.Semaphore(value=1)`.
+    """
 
     def __init__(self):
+        """**Arguments:** None."""
         self._semaphore = Semaphore(value=1)
 
     def __call__(self) -> Coro[contextlib.AbstractContextManager[None]]:
+        """Block until the lock can be entered."""
         return self._semaphore()
 
 
 class Barrier:
-    """Prevents coroutines from progressing until at least `value` of them have called `yield barrier.wait()`."""
+    """Prevents coroutines from progressing until at least `value` of them have called `yield barrier.wait()`.
+
+    Usage:
+    ```python
+    barrier = tinyio.Barrier(value=2)
+
+    def coro1():
+        yield barrier
+        ...
+
+    def coro2():
+        yield barrier
+        ...
+    ```
+    neither `...` will execute until both coroutines have reached the barrier.
+    """
 
     def __init__(self, value: int):
+        """**Arguments:**
+
+        - `value`: the number of concurrent accesses until the barrier unblocks.
+        """
         self._count = 0
         self._value = value
         self._event = Event()
 
     def wait(self):
+        """Block until the barrier can be passed."""
         count = self._count
         self._count += 1
         if self._count == self._value:
